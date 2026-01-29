@@ -4,6 +4,7 @@ mod data;
 mod executor;
 mod mempool;
 mod oracle;
+mod provider;
 
 use tokio::sync::mpsc;
 use std::sync::Arc;
@@ -11,11 +12,26 @@ use crate::risk::engine::RiskEngine;
 use crate::events::event::Event;
 use crate::data::asset::Asset;
 use crate::data::user::User;
+use crate::provider::AaveProvider;
 
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
     tracing::info!("Starting Liquidator System...");
+
+    // 0. Connect to Aave Fork
+    let rpc_url = "http://127.0.0.1:8545";
+    let provider = match AaveProvider::new(rpc_url).await {
+        Ok(p) => {
+            tracing::info!("✓ Connected to Aave fork successfully!");
+            Arc::new(p)
+        }
+        Err(e) => {
+            tracing::error!("✗ Failed to connect to Aave fork: {:?}", e);
+            tracing::error!("Please ensure Anvil/Hardhat is running at {}", rpc_url);
+            return;
+        }
+    };
 
     // 1. Setup Channels
     let (tx, rx) = mpsc::channel(100);
@@ -69,7 +85,15 @@ async fn main() {
         engine.run().await;
     });
 
-    // 5. Simulate Events
+    // 5. Spawn Block Watcher
+    let provider_clone = Arc::clone(&provider);
+    tokio::spawn(async move {
+        if let Err(e) = provider_clone.watch_blocks().await {
+            tracing::error!("Block watcher error: {:?}", e);
+        }
+    });
+
+    // 6. Simulate Events
     let tx_clone = tx.clone();
     tokio::spawn(async move {
         // Wait a bit
