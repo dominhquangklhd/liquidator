@@ -4,3 +4,9 @@
 .idea/
 *.swp
 *.iml
+
+# Ignore log files and databases
+*.log
+*.sql
+*.sqlite
+*.db

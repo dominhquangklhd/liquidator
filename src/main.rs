@@ -5,6 +5,7 @@ mod executor;
 mod mempool;
 mod oracle;
 mod provider;
+mod storage;
 
 use tokio::sync::mpsc;
 use std::sync::Arc;
