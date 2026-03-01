@@ -150,6 +150,13 @@ impl HybridStorage {
         cache.contains(user_address)
     }
     
+    /// Remove target from hot cache (after successful liquidation)
+    pub async fn remove_target(&self, user_address: &str) {
+        let mut cache = self.hot_cache.write().await;
+        cache.remove(user_address);
+        tracing::debug!("Removed {} from hot cache", user_address);
+    }
+    
     // ============================================================================
     // COLD PATH: Database operations (analytics, history)
     // ============================================================================

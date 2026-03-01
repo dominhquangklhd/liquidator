@@ -10,3 +10,9 @@
 *.sql
 *.sqlite
 *.db
+
+.env
+
+# Ignore build artifacts and temporary files
+/cache
+/out
