@@ -14,6 +14,8 @@ use crate::events::event::Event;
 use crate::data::asset::Asset;
 use crate::data::user::User;
 use crate::provider::AaveProvider;
+use crate::oracle::{OracleManager, OracleConfig, OracleWorkerConfig};
+use crate::oracle::worker::{oracle_price_worker, oracle_stats_worker, oracle_health_worker};
 
 /// # Liquidator System - Main Entry Point
 /// 
@@ -119,11 +121,59 @@ async fn main() {
     });
 
     // ============================================================================
-    // PHASE 6: SIMULATION (TESTING ONLY)
+    // PHASE 6: ORACLE PRICE FEEDS
     // ============================================================================
     
-    // Mô phỏng sự kiện giá ETH sụt giảm để test liquidation logic
-    spawn_simulation_worker(tx.clone());
+    // Khởi tạo Oracle module — theo dõi giá realtime từ Chainlink
+    let oracle_config = OracleConfig::local_fork(); // Dùng local_fork() cho Anvil
+    let tx_for_oracle = tx.clone();
+    
+    match OracleManager::new(oracle_config.clone(), provider.provider(), tx_for_oracle).await {
+        Ok(mut oracle_manager) => {
+            // Khởi tạo feeds (đọc metadata + giá ban đầu)
+            if let Err(e) = oracle_manager.initialize().await {
+                tracing::warn!("Oracle initialization partial failure: {:?}", e);
+            }
+            
+            let oracle = Arc::new(oracle_manager);
+            
+            // 6.1 Oracle Price Worker — poll giá định kỳ
+            let oracle_for_price = Arc::clone(&oracle);
+            let worker_config = OracleWorkerConfig {
+                poll_interval_ms: oracle_config.poll_interval_ms,
+                stats_interval_secs: 60,
+                health_check_interval_secs: 300,
+            };
+            
+            let price_worker_config = worker_config.clone();
+            tokio::spawn(async move {
+                oracle_price_worker(oracle_for_price, price_worker_config).await;
+            });
+            
+            // 6.2 Oracle Stats Worker — log thống kê định kỳ
+            let oracle_for_stats = Arc::clone(&oracle);
+            let stats_worker_config = worker_config.clone();
+            tokio::spawn(async move {
+                oracle_stats_worker(oracle_for_stats, stats_worker_config).await;
+            });
+            
+            // 6.3 Oracle Health Worker — kiểm tra sức khỏe feeds
+            let oracle_for_health = Arc::clone(&oracle);
+            let health_worker_config = worker_config.clone();
+            tokio::spawn(async move {
+                oracle_health_worker(oracle_for_health, health_worker_config).await;
+            });
+            
+            tracing::info!("✓ Oracle workers spawned ({} feeds)", oracle.feed_count());
+        }
+        Err(e) => {
+            tracing::error!("✗ Failed to create OracleManager: {:?}", e);
+            tracing::warn!("System will run without oracle price feeds");
+            
+            // Fallback: chạy simulation worker thay thế
+            spawn_simulation_worker(tx.clone());
+        }
+    }
 
     // ============================================================================
     // PHASE 7: KEEP SYSTEM ALIVE

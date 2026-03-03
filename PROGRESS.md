@@ -12,7 +12,7 @@ Bot liquidation chuyên nghiệp cần **12 luồng (threads/tasks)** chính:
 | 4 | Liquidation Executor | Gửi transaction liquidation lên chain | ✅ Đã triển khai |
 | 5 | Storage Sync | Đồng bộ hot cache ↔ cold storage (SQLite) | ✅ Đã triển khai |
 | 6 | Stats Logger | Ghi log thống kê định kỳ | ✅ Đã triển khai |
-| 7 | Oracle Price Feeds | Theo dõi giá từ Chainlink/Pyth realtime | ❌ Chưa triển khai |
+| 7 | Oracle Price Feeds | Theo dõi giá từ Chainlink/Pyth realtime | ✅ Đã triển khai |
 | 8 | Mempool Monitor | Phát hiện pending TX có thể trigger liquidation | ❌ Chưa triển khai |
 | 9 | Profit Calculator | Tính toán lợi nhuận ước tính cho mỗi cơ hội | ❌ Chưa triển khai |
 | 10 | Strategy Decider | Quyết định chiến lược liquidation (DEX routing, flash loan) | ❌ Chưa triển khai |
@@ -58,7 +58,26 @@ Bot liquidation chuyên nghiệp cần **12 luồng (threads/tasks)** chính:
 - [x] **Workers** (`worker.rs`) - executor_worker, stats_worker, nonce_sync_worker
 - [x] **ABI binding** - abigen! cho AavePool (liquidationCall, getUserAccountData)
 
-### 7. Main Entry (`src/main.rs`)
+### 7. Oracle Module (`src/oracle/`)
+- [x] **OracleConfig** (`config.rs`) - Cấu hình feeds, polling interval, deviation threshold
+- [x] **PriceFeedConfig** - Per-feed config: address, decimals, heartbeat, deviation%
+- [x] **Preset configs** - `mainnet()` (ETH, WBTC, USDC, DAI, LINK, AAVE), `local_fork()`
+- [x] **ChainlinkFeed** (`chainlink.rs`) - Đọc giá từ Chainlink AggregatorV3Interface
+- [x] **ABI bindings** - abigen! cho latestRoundData, decimals, description, getRoundData
+- [x] **Price validation** - Kiểm tra answer > 0, staleness detection
+- [x] **PriceData** (`types.rs`) - Struct giá: price_usd, raw, round_id, updated_at
+- [x] **FeedStatus** - Active/Stale/Error/Uninitialized enum
+- [x] **OracleStats** - Thống kê: polls, updates, errors, feed counts
+- [x] **OracleManager** (`manager.rs`) - Quản lý tất cả feeds, poll, deviation detection
+- [x] **Deviation detection** - Chỉ emit PriceUpdate khi giá thay đổi >= threshold%
+- [x] **USD→ETH conversion** - Convert giá USD sang price_in_eth cho RiskEngine
+- [x] **Retry logic** - Retry N lần khi RPC call thất bại
+- [x] **Fallback** - Dùng cached price khi feed lỗi, cảnh báo stale
+- [x] **Price cache API** - get_price(), get_price_usd(), get_all_prices()
+- [x] **Workers** (`worker.rs`) - oracle_price_worker, oracle_stats_worker, oracle_health_worker
+- [x] **Main integration** - Spawn 3 oracle workers trong main.rs
+
+### 8. Main Entry (`src/main.rs`)
 - [x] Tokio async runtime
 - [x] Spawn RiskEngine worker
 - [x] Spawn Block watcher
@@ -73,16 +92,7 @@ Bot liquidation chuyên nghiệp cần **12 luồng (threads/tasks)** chính:
 
 ## ❌ Công việc chưa triển khai
 
-### 1. Oracle Price Feeds (`src/oracle/mod.rs`) - **Ưu tiên: CAO**
-- [ ] Kết nối Chainlink Price Feed contracts
-- [ ] Kết nối Pyth Network (nếu cần)
-- [ ] Polling giá realtime (mỗi block hoặc heartbeat)
-- [ ] Phát `Event::PriceUpdate` khi giá thay đổi đáng kể
-- [ ] Hỗ trợ multiple asset pairs (ETH/USD, WBTC/USD, etc.)
-- [ ] Price deviation detection (dùng cho MEV protection)
-- [ ] Fallback mechanism (nếu 1 oracle down)
-
-### 2. Profit Calculator - **Ưu tiên: CAO**
+### 1. Profit Calculator - **Ưu tiên: CAO**
 - [ ] Tính estimated profit cho mỗi liquidation opportunity
 - [ ] Tính gas cost (gas price × gas limit → USD)
 - [ ] Tính liquidation bonus (collateral × bonus% - debt)
@@ -91,7 +101,7 @@ Bot liquidation chuyên nghiệp cần **12 luồng (threads/tasks)** chính:
 - [ ] Net profit = gross profit - gas cost - slippage
 - [ ] Cập nhật `estimated_profit` trong LiquidationTarget
 
-### 3. Mempool Monitor (`src/mempool/mod.rs`) - **Ưu tiên: TRUNG BÌNH**
+### 2. Mempool Monitor (`src/mempool/mod.rs`) - **Ưu tiên: TRUNG BÌNH**
 - [ ] Subscribe pending transactions (eth_subscribe)
 - [ ] Filter transactions liên quan đến Aave Pool
 - [ ] Decode calldata (Borrow, Withdraw, Repay)
@@ -100,7 +110,7 @@ Bot liquidation chuyên nghiệp cần **12 luồng (threads/tasks)** chính:
 - [ ] Frontrun detection (phát hiện bot khác cũng muốn liquidate)
 - [ ] Flashbots integration (private transaction)
 
-### 4. Strategy Decider - **Ưu tiên: TRUNG BÌNH**
+### 3. Strategy Decider - **Ưu tiên: TRUNG BÌNH**
 - [ ] Chọn best collateral/debt pair cho liquidation
 - [ ] Flash loan routing (Aave flash loan, Balancer, dYdX)
 - [ ] DEX routing cho swap collateral → debt token 
@@ -143,7 +153,7 @@ Bot liquidation chuyên nghiệp cần **12 luồng (threads/tasks)** chính:
 
 ```
 Phase 1 (Core - Bắt buộc):
-  1. Oracle Price Feeds  ← Cần giá realtime để tính HF chính xác
+  1. ✅ Oracle Price Feeds  ← ĐÃ TRIỂN KHAI
   2. Profit Calculator    ← Cần tính profit trước khi execute
   
 Phase 2 (Competitive Edge):
@@ -161,14 +171,14 @@ Phase 3 (Production Ready):
 ## 📊 Tiến độ tổng thể
 
 ```
-Hoàn thành:  7/11 modules  (64%)
-Còn lại:     4/11 modules  (36%)
+Hoàn thành:  8/11 modules  (73%)
+Còn lại:     3/11 modules  (27%)
 
-[████████████████░░░░░░░░░] 64%
+[██████████████████░░░░░░░] 73%
 ```
 
-> **Ghi chú**: Oracle Price Feeds là module quan trọng nhất cần triển khai tiếp theo,
-> vì toàn bộ logic tính HF phụ thuộc vào giá chính xác từ on-chain oracles.
+> **Ghi chú**: Profit Calculator là module quan trọng nhất cần triển khai tiếp theo,
+> vì cần tính toán chính xác lợi nhuận trước khi quyết định execute liquidation.
 
 ---
 
