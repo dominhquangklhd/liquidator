@@ -14,7 +14,7 @@ Bot liquidation chuyên nghiệp cần **12 luồng (threads/tasks)** chính:
 | 6 | Stats Logger | Ghi log thống kê định kỳ | ✅ Đã triển khai |
 | 7 | Oracle Price Feeds | Theo dõi giá từ Chainlink/Pyth realtime | ✅ Đã triển khai |
 | 8 | Mempool Monitor | Phát hiện pending TX có thể trigger liquidation | ❌ Chưa triển khai |
-| 9 | Profit Calculator | Tính toán lợi nhuận ước tính cho mỗi cơ hội | ❌ Chưa triển khai |
+| 9 | Profit Calculator | Tính toán lợi nhuận ước tính cho mỗi cơ hội | ✅ Đã triển khai |
 | 10 | Strategy Decider | Quyết định chiến lược liquidation (DEX routing, flash loan) | ❌ Chưa triển khai |
 | 11 | Nonce Manager Sync | Đồng bộ nonce với on-chain | ✅ Đã triển khai |
 | 12 | Memory Monitor | Giám sát RAM, auto evict cache khi cần | ✅ Đã triển khai |
@@ -84,7 +84,25 @@ Bot liquidation chuyên nghiệp cần **12 luồng (threads/tasks)** chính:
 - [x] Spawn Aave event watcher
 - [x] Graceful shutdown (Ctrl+C)
 
-### 8. Build & Compile
+### 9. Profit Calculator Module (`src/profit/`)
+- [x] **ProfitConfig** (`config.rs`) - Cấu hình: bonus%, close_factor, gas, slippage, thresholds
+- [x] **Preset configs** - `mainnet()` (min $50/200% ROI), `local_fork()` (min $1/50% ROI)
+- [x] **ProfitEstimate** (`types.rs`) - Kết quả: gross/net profit, gas, slippage, ROI, breakdown
+- [x] **LiquidationPair** - Cặp collateral/debt với scoring
+- [x] **GasCostEstimate** - Gas cost: standard + EIP-1559 calculation
+- [x] **ProfitBreakdown** - Chi tiết: revenue, costs, margins
+- [x] **GasEstimator** (`gas.rs`) - Đọc gas price từ RPC, EIP-1559 support
+- [x] **ProfitCalculator** (`calculator.rs`) - Core logic tính toán lợi nhuận
+- [x] **evaluate()** - Đánh giá single target: HF check → find pairs → calculate
+- [x] **evaluate_batch()** - Đánh giá nhiều targets, sort by profit desc
+- [x] **find_profitable()** - Filter chỉ lấy profitable opportunities
+- [x] **find_liquidation_pairs()** - Tìm tất cả cặp collateral/debt khả thi
+- [x] **calculate_profit()** - Tính: debt_to_cover, bonus, gas, slippage, flash_loan_fee
+- [x] **check_profitability()** - Kiểm tra min_profit, min_roi thresholds
+- [x] **ProfitStats** - Thống kê: evaluations, profitable count, avg gas cost
+- [x] **23 unit tests** - config (7), types (5), gas (4), calculator (7) — all passed
+
+### 10. Build & Compile
 - [x] `cargo build` thành công (0 errors, chỉ warnings)
 - [x] Cargo.toml cấu hình đầy đủ dependencies
 
@@ -92,14 +110,14 @@ Bot liquidation chuyên nghiệp cần **12 luồng (threads/tasks)** chính:
 
 ## ❌ Công việc chưa triển khai
 
-### 1. Profit Calculator - **Ưu tiên: CAO**
-- [ ] Tính estimated profit cho mỗi liquidation opportunity
-- [ ] Tính gas cost (gas price × gas limit → USD)
-- [ ] Tính liquidation bonus (collateral × bonus% - debt)
-- [ ] Tính slippage estimate khi swap collateral → debt token
-- [ ] So sánh DEX prices (Uniswap, Sushiswap, etc.)
-- [ ] Net profit = gross profit - gas cost - slippage
-- [ ] Cập nhật `estimated_profit` trong LiquidationTarget
+### 1. Profit Calculator - **✅ ĐÃ TRIỂN KHAI**
+- [x] Tính estimated profit cho mỗi liquidation opportunity
+- [x] Tính gas cost (gas price × gas limit → USD)
+- [x] Tính liquidation bonus (collateral × bonus% - debt)
+- [x] Tính slippage estimate khi swap collateral → debt token
+- [x] Net profit = gross profit - gas cost - slippage
+- [x] Cập nhật `estimated_profit` trong LiquidationTarget
+- [x] 23 unit tests passed (config: 7, types: 5, gas: 4, calculator: 7)
 
 ### 2. Mempool Monitor (`src/mempool/mod.rs`) - **Ưu tiên: TRUNG BÌNH**
 - [ ] Subscribe pending transactions (eth_subscribe)
@@ -154,7 +172,7 @@ Bot liquidation chuyên nghiệp cần **12 luồng (threads/tasks)** chính:
 ```
 Phase 1 (Core - Bắt buộc):
   1. ✅ Oracle Price Feeds  ← ĐÃ TRIỂN KHAI
-  2. Profit Calculator    ← Cần tính profit trước khi execute
+  2. ✅ Profit Calculator   ← ĐÃ TRIỂN KHAI (23 tests passed)
   
 Phase 2 (Competitive Edge):
   3. Mempool Monitor     ← Phát hiện cơ hội sớm hơn
@@ -171,14 +189,15 @@ Phase 3 (Production Ready):
 ## 📊 Tiến độ tổng thể
 
 ```
-Hoàn thành:  8/11 modules  (73%)
-Còn lại:     3/11 modules  (27%)
+Hoàn thành:  9/11 modules  (82%)
+Còn lại:     2/11 modules  (18%)
 
-[██████████████████░░░░░░░] 73%
+[████████████████████░░░░░] 82%
 ```
 
-> **Ghi chú**: Profit Calculator là module quan trọng nhất cần triển khai tiếp theo,
-> vì cần tính toán chính xác lợi nhuận trước khi quyết định execute liquidation.
+> **Ghi chú**: Mempool Monitor và Strategy Decider là 2 modules còn lại.
+> Mempool Monitor cần WebSocket RPC hoặc Flashbots relay.
+> Strategy Decider cần tích hợp DEX routing + flash loan.
 
 ---
 

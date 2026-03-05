@@ -4,6 +4,7 @@ mod data;
 mod executor;
 mod mempool;
 mod oracle;
+mod profit;
 mod provider;
 mod storage;
 
@@ -16,6 +17,7 @@ use crate::data::user::User;
 use crate::provider::AaveProvider;
 use crate::oracle::{OracleManager, OracleConfig, OracleWorkerConfig};
 use crate::oracle::worker::{oracle_price_worker, oracle_stats_worker, oracle_health_worker};
+use crate::profit::{ProfitCalculator, ProfitConfig, GasEstimator};
 
 /// # Liquidator System - Main Entry Point
 /// 
@@ -165,6 +167,20 @@ async fn main() {
             });
             
             tracing::info!("✓ Oracle workers spawned ({} feeds)", oracle.feed_count());
+            
+            // ── Khởi tạo Profit Calculator (sử dụng oracle price cache) ──
+            let profit_config = ProfitConfig::local_fork(); // Dùng local_fork() cho Anvil
+            let gas_estimator = GasEstimator::new(provider.provider());
+            let profit_calculator = Arc::new(ProfitCalculator::new(
+                profit_config,
+                gas_estimator,
+                oracle.price_cache(),
+            ));
+            
+            tracing::info!("✓ Profit Calculator initialized (min_profit=${}, min_roi={}%)",
+                profit_calculator.config().min_profit_usd,
+                profit_calculator.config().min_roi_pct,
+            );
         }
         Err(e) => {
             tracing::error!("✗ Failed to create OracleManager: {:?}", e);

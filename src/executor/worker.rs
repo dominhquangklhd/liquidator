@@ -5,6 +5,7 @@
 
 use super::executor::{LiquidationExecutor, LiquidationResult};
 use crate::storage::{HybridStorage, LiquidationTarget, LiquidationEvent};
+use crate::profit::ProfitCalculator;
 
 use std::sync::Arc;
 use tokio::time::{interval, Duration};
@@ -52,6 +53,7 @@ pub async fn executor_worker(
     executor: Arc<LiquidationExecutor>,
     storage: Arc<HybridStorage>,
     config: WorkerConfig,
+    profit_calc: Option<Arc<ProfitCalculator>>,
 ) {
     let mut ticker = interval(Duration::from_millis(config.check_interval_ms));
     
@@ -83,6 +85,52 @@ pub async fn executor_worker(
         }
         
         tracing::info!("Found {} liquidatable targets", liquidatable.len());
+        
+        // ── Profit evaluation: chỉ execute targets thực sự profitable ──
+        let liquidatable = if let Some(ref calc) = profit_calc {
+            match calc.find_profitable(&liquidatable).await {
+                Ok(profitable_estimates) => {
+                    if profitable_estimates.is_empty() {
+                        tracing::debug!("No profitable targets after evaluation");
+                        continue;
+                    }
+                    
+                    tracing::info!(
+                        "Profit filter: {}/{} targets profitable",
+                        profitable_estimates.len(),
+                        liquidatable.len()
+                    );
+                    
+                    // Update estimated_profit trên mỗi target với giá trị thực tế
+                    // và chỉ giữ lại các target profitable
+                    let profitable_addresses: std::collections::HashMap<String, f64> = 
+                        profitable_estimates.iter()
+                            .map(|e| (e.user_address.clone(), e.net_profit_usd))
+                            .collect();
+                    
+                    liquidatable.into_iter()
+                        .filter_map(|mut t| {
+                            if let Some(&profit) = profitable_addresses.get(&t.user_address) {
+                                t.estimated_profit = profit;
+                                Some(t)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                }
+                Err(e) => {
+                    tracing::warn!("Profit evaluation failed: {:?}, proceeding without filter", e);
+                    liquidatable
+                }
+            }
+        } else {
+            liquidatable
+        };
+        
+        if liquidatable.is_empty() {
+            continue;
+        }
         
         if config.parallel_execution {
             // Parallel execution
