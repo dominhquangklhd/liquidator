@@ -10,6 +10,7 @@ pub mod executor;
 pub mod provider;
 pub mod oracle;
 pub mod profit;
+pub mod strategy;
 
 // Re-export commonly used types
 pub use storage::{HybridStorage, StorageConfig, LiquidationTarget, LiquidationEvent};
@@ -26,4 +27,8 @@ pub use oracle::{
 pub use profit::{
     ProfitCalculator, ProfitConfig, ProfitEstimate, ProfitBreakdown,
     LiquidationPair, GasCostEstimate, GasEstimator, ProfitStats,
+};
+pub use strategy::{
+    StrategyDecider, StrategyConfig, StrategyStats,
+    ExecutionMethod, StrategyDecision, PrioritizedTarget, ExecutionPlan,
 };

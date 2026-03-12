@@ -7,6 +7,7 @@ mod oracle;
 mod profit;
 mod provider;
 mod storage;
+mod strategy;
 
 use tokio::sync::mpsc;
 use std::sync::Arc;
@@ -18,6 +19,7 @@ use crate::provider::AaveProvider;
 use crate::oracle::{OracleManager, OracleConfig, OracleWorkerConfig};
 use crate::oracle::worker::{oracle_price_worker, oracle_stats_worker, oracle_health_worker};
 use crate::profit::{ProfitCalculator, ProfitConfig, GasEstimator};
+use crate::strategy::{StrategyDecider, StrategyConfig};
 
 /// # Liquidator System - Main Entry Point
 /// 
@@ -180,6 +182,15 @@ async fn main() {
             tracing::info!("✓ Profit Calculator initialized (min_profit=${}, min_roi={}%)",
                 profit_calculator.config().min_profit_usd,
                 profit_calculator.config().min_roi_pct,
+            );
+            
+            // ── Khởi tạo Strategy Decider (quyết định direct vs flash loan + ưu tiên targets) ──
+            let strategy_config = StrategyConfig::local_fork(); // Dùng local_fork() cho Anvil
+            let strategy_decider = Arc::new(StrategyDecider::new(strategy_config.clone()));
+            
+            tracing::info!("✓ Strategy Decider initialized (max_concurrent={}, flash_loan={})",
+                strategy_config.max_concurrent_liquidations,
+                strategy_config.flash_loan_available,
             );
         }
         Err(e) => {

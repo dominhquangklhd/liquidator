@@ -15,7 +15,7 @@ Bot liquidation chuyên nghiệp cần **12 luồng (threads/tasks)** chính:
 | 7 | Oracle Price Feeds | Theo dõi giá từ Chainlink/Pyth realtime | ✅ Đã triển khai |
 | 8 | Mempool Monitor | Phát hiện pending TX có thể trigger liquidation | ❌ Chưa triển khai |
 | 9 | Profit Calculator | Tính toán lợi nhuận ước tính cho mỗi cơ hội | ✅ Đã triển khai |
-| 10 | Strategy Decider | Quyết định chiến lược liquidation (DEX routing, flash loan) | ❌ Chưa triển khai |
+| 10 | Strategy Decider | Quyết định chiến lược liquidation (Direct vs Flash Loan, priority scoring) | ✅ Đã triển khai |
 | 11 | Nonce Manager Sync | Đồng bộ nonce với on-chain | ✅ Đã triển khai |
 | 12 | Memory Monitor | Giám sát RAM, auto evict cache khi cần | ✅ Đã triển khai |
 
@@ -102,7 +102,23 @@ Bot liquidation chuyên nghiệp cần **12 luồng (threads/tasks)** chính:
 - [x] **ProfitStats** - Thống kê: evaluations, profitable count, avg gas cost
 - [x] **23 unit tests** - config (7), types (5), gas (4), calculator (7) — all passed
 
-### 10. Build & Compile
+### 10. Strategy Decider Module (`src/strategy/`)
+- [x] **StrategyConfig** (`config.rs`) - Cấu hình: wallet balance, gas limits, exposure limits, weights
+- [x] **Preset configs** - `default()`, `mainnet()` (flash loan enabled, max gas 50 gwei), `local_fork()` (flash loan disabled, max gas 500 gwei)
+- [x] **ExecutionMethod** (`types.rs`) - Enum: Direct (đủ token) / FlashLoan (thiếu token) / Skip (không khả thi)
+- [x] **StrategyDecision** - Kết quả: method, priority_score, adjusted_profit, reasoning
+- [x] **PrioritizedTarget** - Target đã xếp hạng với rank
+- [x] **ExecutionPlan** - Kế hoạch batch: danh sách targets đã sort + thống kê
+- [x] **StrategyDecider** (`decider.rs`) - Core logic quyết định chiến lược
+- [x] **Method Decision** - Decision tree: check ETH balance → check token availability → check debt size → Direct/FlashLoan/Skip
+- [x] **Priority Scoring** - Multi-factor: `w_profit × profit + w_urgency × 1/HF + w_efficiency × ROI + w_size × 1/debt` (min-max normalization)
+- [x] **Risk Management** - Circuit breaker (N failures → cooldown), exposure limits (tổng + đơn lẻ), concurrent limit
+- [x] **Wallet State** - Track ETH balance + token balances, updatable bởi external workers
+- [x] **StrategyStats** - Thống kê: total decisions, direct/flash_loan/skip counts, circuit breaker trips
+- [x] **13+ unit tests** - normalizer (3), method decision (4), plan creation (3), circuit breaker (2), stats (1) — all passed
+- [x] **Main integration** - Khởi tạo StrategyDecider trong main.rs, truyền vào executor_worker
+
+### 11. Build & Compile
 - [x] `cargo build` thành công (0 errors, chỉ warnings)
 - [x] Cargo.toml cấu hình đầy đủ dependencies
 
@@ -110,16 +126,7 @@ Bot liquidation chuyên nghiệp cần **12 luồng (threads/tasks)** chính:
 
 ## ❌ Công việc chưa triển khai
 
-### 1. Profit Calculator - **✅ ĐÃ TRIỂN KHAI**
-- [x] Tính estimated profit cho mỗi liquidation opportunity
-- [x] Tính gas cost (gas price × gas limit → USD)
-- [x] Tính liquidation bonus (collateral × bonus% - debt)
-- [x] Tính slippage estimate khi swap collateral → debt token
-- [x] Net profit = gross profit - gas cost - slippage
-- [x] Cập nhật `estimated_profit` trong LiquidationTarget
-- [x] 23 unit tests passed (config: 7, types: 5, gas: 4, calculator: 7)
-
-### 2. Mempool Monitor (`src/mempool/mod.rs`) - **Ưu tiên: TRUNG BÌNH**
+### 1. Mempool Monitor (`src/mempool/mod.rs`) - **Ưu tiên: TRUNG BÌNH**
 - [ ] Subscribe pending transactions (eth_subscribe)
 - [ ] Filter transactions liên quan đến Aave Pool
 - [ ] Decode calldata (Borrow, Withdraw, Repay)
@@ -127,14 +134,6 @@ Bot liquidation chuyên nghiệp cần **12 luồng (threads/tasks)** chính:
 - [ ] Phát `Event::MempoolTx` cho RiskEngine
 - [ ] Frontrun detection (phát hiện bot khác cũng muốn liquidate)
 - [ ] Flashbots integration (private transaction)
-
-### 3. Strategy Decider - **Ưu tiên: TRUNG BÌNH**
-- [ ] Chọn best collateral/debt pair cho liquidation
-- [ ] Flash loan routing (Aave flash loan, Balancer, dYdX)
-- [ ] DEX routing cho swap collateral → debt token 
-- [ ] Multi-path optimization (split order across DEXes)
-- [ ] MEV protection (Flashbots bundle, private mempool)
-- [ ] Dynamic gas pricing (EIP-1559 priority fee calculation)
 
 ---
 
@@ -162,7 +161,7 @@ Bot liquidation chuyên nghiệp cần **12 luồng (threads/tasks)** chính:
 ### Security
 - [ ] Private key management (hardware wallet, KMS)
 - [ ] Rate limiting cho RPC calls
-- [ ] Circuit breaker khi gặp quá nhiều failed TX
+- [x] Circuit breaker khi gặp quá nhiều failed TX ← Đã triển khai trong Strategy Decider
 - [ ] Reentrancy protection
 
 ---
@@ -175,8 +174,8 @@ Phase 1 (Core - Bắt buộc):
   2. ✅ Profit Calculator   ← ĐÃ TRIỂN KHAI (23 tests passed)
   
 Phase 2 (Competitive Edge):
-  3. Mempool Monitor     ← Phát hiện cơ hội sớm hơn
-  4. Strategy Decider    ← Tối ưu lợi nhuận
+  3. ✅ Strategy Decider   ← ĐÃ TRIỂN KHAI (Direct vs Flash Loan + priority scoring)
+  4. Mempool Monitor     ← Phát hiện cơ hội sớm hơn
 
 Phase 3 (Production Ready):
   5. WebSocket provider  ← Giảm latency
@@ -189,15 +188,14 @@ Phase 3 (Production Ready):
 ## 📊 Tiến độ tổng thể
 
 ```
-Hoàn thành:  9/11 modules  (82%)
-Còn lại:     2/11 modules  (18%)
+Hoàn thành:  10/11 modules  (91%)
+Còn lại:      1/11 modules  ( 9%)
 
-[████████████████████░░░░░] 82%
+[██████████████████████░░░] 91%
 ```
 
-> **Ghi chú**: Mempool Monitor và Strategy Decider là 2 modules còn lại.
+> **Ghi chú**: Mempool Monitor là module duy nhất còn lại.
 > Mempool Monitor cần WebSocket RPC hoặc Flashbots relay.
-> Strategy Decider cần tích hợp DEX routing + flash loan.
 
 ---
 
