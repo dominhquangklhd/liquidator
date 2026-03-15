@@ -7,21 +7,24 @@ use crate::data::registry::Registry;
 use crate::events::event::Event;
 use crate::risk::bucket::RiskBucket;
 use crate::risk::health_factor::HealthFactorCalculator;
+use crate::storage::{HybridStorage, LiquidationTarget};
 
 pub struct RiskEngine {
     pub users: Arc<DashMap<UserId, User>>,
     pub assets: Arc<DashMap<AssetId, Asset>>,
     pub registry: Arc<Registry>,
     receiver: mpsc::Receiver<Event>,
+    storage: Arc<HybridStorage>,
 }
 
 impl RiskEngine {
-    pub fn new(receiver: mpsc::Receiver<Event>) -> Self {
+    pub fn new(receiver: mpsc::Receiver<Event>, storage: Arc<HybridStorage>) -> Self {
         Self {
             users: Arc::new(DashMap::new()),
             assets: Arc::new(DashMap::new()),
             registry: Arc::new(Registry::new()),
             receiver,
+            storage,
         }
     }
 
@@ -31,7 +34,7 @@ impl RiskEngine {
         while let Some(event) = self.receiver.recv().await {
             match event {
                 Event::PriceUpdate { asset_id, new_price } => {
-                    self.handle_price_update(asset_id, new_price);
+                    self.handle_price_update(asset_id, new_price).await;
                 }
                 Event::MempoolTx { user_id, affected_assets } => {
                     self.handle_mempool_tx(user_id, affected_assets);
@@ -43,8 +46,8 @@ impl RiskEngine {
         }
     }
 
-    fn handle_price_update(&self, asset_id: AssetId, new_price: f64) {
-        // 1. Update Asset Price
+    async fn handle_price_update(&self, asset_id: AssetId, new_price: f64) {
+        // 1. Update asset price
         if let Some(mut asset) = self.assets.get_mut(&asset_id) {
             asset.price_in_eth = new_price;
         } else {
@@ -54,27 +57,16 @@ impl RiskEngine {
 
         // 2. Fetch affected users
         let affected_users = self.registry.get_users_for_asset(&asset_id);
-        
         tracing::debug!("Price update for {} ({} users affected)", asset_id, affected_users.len());
 
-        // 3. Re-evaluate Risk
-        // Convert dashmap reference to standard HashMap for HF calculator
-        // Note: For high performance, we might want to avoid full clone if possible,
-        // but HF calculator needs a consistent view of asset parameters.
-        // For O(1) mostly, we can just pass the asset map wrapper and look up individually?
-        // Let's modify HF calculator to take a function or trait, or just pass the map.
-        // Cloning the *Asset structs* (small) into a HashMap is fine, or we can just iterate.
-        // Actually, `DashMap` iteration can deadlock if we are not careful with locks.
-        // But here we need random access.
-        // Let's clone the assets map for safety during calculation? No, that's O(N_assets).
-        // Better: Pass `&DashMap` to HF calculator? 
-        // Let's just collect necessary assets for the user?
-        // Simplest: Collect all assets into a HashMap. If N_assets is small (e.g. < 50), this is cheap.
-        // Let's assume N_assets is small.
-        
+        // 3. Snapshot assets into plain HashMap (avoids holding DashMap shard locks across .await)
         let asset_snapshot: std::collections::HashMap<_, _> = self.assets.iter()
             .map(|r| (r.key().clone(), r.value().clone()))
             .collect();
+
+        // 4. Re-evaluate each user; collect targets that need storage update.
+        //    All DashMap writes complete before the first .await so no lock is held across await.
+        let mut targets_to_update: Vec<LiquidationTarget> = Vec::new();
 
         for user_id in affected_users {
             if let Some(mut user) = self.users.get_mut(&user_id) {
@@ -87,15 +79,58 @@ impl RiskEngine {
 
                 if new_bucket != old_bucket {
                     tracing::info!(
-                        "User {} bucket change: {:?} -> {:?} (HF: {:.4})", 
+                        "User {} bucket change: {:?} -> {:?} (HF: {:.4})",
                         user_id, old_bucket, new_bucket, new_hf
                     );
                 }
 
                 if new_bucket == RiskBucket::Liquidate {
                     tracing::warn!("LIQUIDATION ALERT: User {} HF {:.4}", user_id, new_hf);
-                    // Emit high risk event or trigger executor
                 }
+
+                // Build LiquidationTarget for users approaching liquidation threshold.
+                // Threshold 1.3 ensures we track users before they actually cross 1.0.
+                if new_hf < 1.3 {
+                    // Rough USD values using price_in_eth * $2000 (good enough for ordering targets)
+                    let total_collateral_usd: f64 = user.collateral.iter()
+                        .filter_map(|(aid, amount)| {
+                            asset_snapshot.get(aid).map(|a| amount * a.price_in_eth * 2000.0)
+                        })
+                        .sum();
+                    let total_debt_usd: f64 = user.debt.iter()
+                        .filter_map(|(aid, amount)| {
+                            asset_snapshot.get(aid).map(|a| amount * a.price_in_eth * 2000.0)
+                        })
+                        .sum();
+                    let ltv = if total_collateral_usd > 0.0 {
+                        total_debt_usd / total_collateral_usd
+                    } else {
+                        0.0
+                    };
+                    // risk_score 1-10: lower HF = higher urgency
+                    let risk_score = ((1.5 - new_hf) / 0.5 * 10.0).clamp(1.0, 10.0) as u8;
+
+                    targets_to_update.push(LiquidationTarget {
+                        user_address: user.id.clone(),
+                        health_factor: new_hf,
+                        total_collateral_usd,
+                        total_debt_usd,
+                        ltv,
+                        liquidation_threshold: 0.85,
+                        collateral: user.collateral.clone(),
+                        debt: user.debt.clone(),
+                        estimated_profit: 0.0, // filled by ProfitCalculator in executor_worker
+                        risk_score,
+                        last_updated: chrono::Utc::now().timestamp(),
+                    });
+                }
+            } // DashMap lock released here
+        }
+
+        // 5. Push targets to hot cache (safe to await — all DashMap locks released above)
+        for target in targets_to_update {
+            if let Err(e) = self.storage.update_user_hf(target).await {
+                tracing::error!("Failed to update storage: {:?}", e);
             }
         }
     }

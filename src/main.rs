@@ -20,6 +20,9 @@ use crate::oracle::{OracleManager, OracleConfig, OracleWorkerConfig};
 use crate::oracle::worker::{oracle_price_worker, oracle_stats_worker, oracle_health_worker};
 use crate::profit::{ProfitCalculator, ProfitConfig, GasEstimator};
 use crate::strategy::{StrategyDecider, StrategyConfig};
+use crate::storage::HybridStorage;
+use crate::executor::{LiquidationExecutor, ExecutorConfig, WorkerConfig};
+use crate::executor::worker::{executor_worker, stats_worker, nonce_sync_worker};
 
 /// # Liquidator System - Main Entry Point
 /// 
@@ -72,10 +75,28 @@ async fn main() {
     let (tx, rx) = mpsc::channel(100);
 
     // ============================================================================
+    // PHASE 2.5: INITIALIZE HYBRID STORAGE
+    // ============================================================================
+
+    let storage = match HybridStorage::new().await {
+        Ok(s) => {
+            tracing::info!("✓ Hybrid Storage initialized");
+            Arc::new(s)
+        }
+        Err(e) => {
+            tracing::error!("✗ Failed to initialize storage: {:?}", e);
+            return;
+        }
+    };
+
+    // Spawn background sync worker: flushes hot cache -> SQLite every 5s
+    let _sync_handle = Arc::clone(&storage).spawn_sync_worker();
+
+    // ============================================================================
     // PHASE 3: INITIALIZE RISK ENGINE
     // ============================================================================
     
-    let mut engine = RiskEngine::new(rx);
+    let mut engine = RiskEngine::new(rx, Arc::clone(&storage));
 
     // ============================================================================
     // PHASE 4: POPULATE INITIAL DATA (SIMULATION)
@@ -192,6 +213,61 @@ async fn main() {
                 strategy_config.max_concurrent_liquidations,
                 strategy_config.flash_loan_available,
             );
+
+            // ── Khởi tạo LiquidationExecutor và spawn executor workers ──
+            // Đọc private key từ env-var; fallback sang Anvil account #0 cho local testing
+            let private_key = std::env::var("PRIVATE_KEY").unwrap_or_else(|_| {
+                tracing::warn!(
+                    "PRIVATE_KEY not set — using Anvil default account (local testing only)"
+                );
+                "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed35a24fd173c1cdd3d3".to_string()
+            });
+
+            let executor_config = ExecutorConfig::testnet(aave_pool_address);
+
+            match LiquidationExecutor::new(
+                executor_config,
+                provider.provider(),
+                &private_key,
+            ).await {
+                Ok(executor) => {
+                    let executor = Arc::new(executor);
+
+                    // Main liquidation loop: polls hot cache every 100ms
+                    let executor_for_worker = Arc::clone(&executor);
+                    let storage_for_worker = Arc::clone(&storage);
+                    let profit_for_worker  = Arc::clone(&profit_calculator);
+                    tokio::spawn(async move {
+                        executor_worker(
+                            executor_for_worker,
+                            storage_for_worker,
+                            WorkerConfig::default(),
+                            Some(profit_for_worker),
+                        ).await;
+                    });
+
+                    // Stats logging worker: prints metrics every 60s
+                    let executor_for_stats = Arc::clone(&executor);
+                    tokio::spawn(async move {
+                        stats_worker(executor_for_stats, 60).await;
+                    });
+
+                    // Nonce sync worker: re-syncs on-chain nonce every 30s
+                    let executor_for_nonce = Arc::clone(&executor);
+                    tokio::spawn(async move {
+                        nonce_sync_worker(executor_for_nonce, 30).await;
+                    });
+
+                    // Suppress unused-variable warning for strategy_decider
+                    let _ = strategy_decider;
+
+                    tracing::info!("✓ Executor workers spawned (dry_run=false)");
+                }
+                Err(e) => {
+                    tracing::error!("✗ Failed to initialize executor: {:?}", e);
+                    tracing::warn!("System running without execution capability");
+                }
+            }
         }
         Err(e) => {
             tracing::error!("✗ Failed to create OracleManager: {:?}", e);
@@ -203,14 +279,15 @@ async fn main() {
     }
 
     // ============================================================================
-    // PHASE 7: KEEP SYSTEM ALIVE
+    // PHASE 7: KEEP SYSTEM ALIVE — wait for Ctrl+C
     // ============================================================================
-    
-    // Giữ main thread running để các background tasks có thể hoạt động
-    // Trong production, nên dùng signal handling để graceful shutdown
-    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-    
-    tracing::info!("Liquidator System shutting down...");
+
+    tracing::info!("✓ All workers running. Press Ctrl+C to stop.");
+    tokio::signal::ctrl_c()
+        .await
+        .expect("Failed to listen for Ctrl+C");
+
+    tracing::info!("Received Ctrl+C — shutting down...");
 }
 
 /// Khởi tạo dữ liệu mô phỏng cho hệ thống
