@@ -124,65 +124,63 @@ Test tích hợp giữa Strategy Decider với các module khác.
 
 ## 3. Kế hoạch thực hiện từng bước
 
-### Phase 1: Chạy & verify Unit Tests hiện có
+### Phase 1: Unit Tests ✅ HOÀN THÀNH
 
 ```bash
-# Bước 1: Chạy toàn bộ unit tests của strategy module
+# Chạy toàn bộ unit tests của strategy module
 cargo test strategy -- --nocapture
 
-# Kết quả kỳ vọng: 13/13 tests passed
+# Kết quả: 31/31 tests passed (12/03/2026)
 ```
 
-### Phase 2: Bổ sung Unit Tests thiếu (U14-U23)
+Đã bổ sung 7 tests mới (U19-U25):
+- ✅ `test_circuit_breaker_cooldown_recovery` — Circuit breaker tự reset sau cooldown
+- ✅ `test_gas_price_too_high_skips` — Gas price > max → Skip (thêm `update_gas_price()` method)
+- ✅ `test_negative_profit_skips` — Profit âm → Skip
+- ✅ `test_empty_input_returns_empty_plan` — Edge case input rỗng
+- ✅ `test_wallet_balance_update_affects_decisions` — Verify state management ETH
+- ✅ `test_token_balance_update_affects_method` — Verify state management token
+- ✅ `test_per_liquidation_exposure_limit` — Single exposure limit enforcement
 
-**File:** `src/strategy/decider.rs` (thêm vào `#[cfg(test)] mod tests`)
+### Phase 2: Integration Tests ✅ HOÀN THÀNH
+
+**File:** `tests/strategy_integration.rs`
 
 ```bash
-# Bước 2: Viết thêm tests → chạy lại  
-cargo test strategy -- --nocapture
-
-# Kết quả kỳ vọng: 23/23 tests passed
-```
-
-**Ưu tiên viết trước:**
-1. `test_circuit_breaker_cooldown` (U22) — Quan trọng cho production
-2. `test_gas_price_too_high_skips` (U17) — Edge case thực tế
-3. `test_negative_profit_skips` (U18) — Edge case thực tế
-4. `test_wallet_balance_update` (U20) + `test_token_balance_update` (U21) — Verify state management
-
-### Phase 3: Integration Tests
-
-**File:** `tests/strategy_integration.rs` (tạo mới)
-
-```rust
-// Cấu trúc test:
-use liquidator::strategy::{StrategyDecider, StrategyConfig};
-use liquidator::profit::{ProfitCalculator, ProfitConfig, ProfitEstimate};
-use liquidator::storage::{HybridStorage, LiquidationTarget};
-
-#[tokio::test]
-async fn test_profit_to_strategy_pipeline() {
-    // 1. Tạo mock targets
-    // 2. Chạy ProfitCalculator
-    // 3. Feed kết quả vào StrategyDecider
-    // 4. Verify ExecutionPlan
-}
-
-#[tokio::test]
-async fn test_full_pipeline_with_executor() {
-    // 1. Setup storage với mock targets
-    // 2. ProfitCalculator filter
-    // 3. StrategyDecider create plan
-    // 4. Executor nhận plan → execute
-}
-```
-
-```bash
-# Bước 3: Chạy integration tests
+# Chạy integration tests
 cargo test --test strategy_integration -- --nocapture
+
+# Kết quả: 13/13 tests passed (12/03/2026)
 ```
 
-### Phase 4: Scenario Tests trên Anvil
+Đã viết 13 integration tests:
+
+**I1 — Profit → Strategy pipeline (2 tests):**
+- ✅ `test_i1_profit_estimates_to_strategy_plan` — 4 targets (3 profitable, 1 loss) → ExecutionPlan correct
+- ✅ `test_i1_empty_profit_results_empty_plan` — 0 targets → empty plan
+
+**I2 — Direct vs FlashLoan consistency (2 tests):**
+- ✅ `test_i2_method_changes_with_wallet_state` — No token→FlashLoan, add token→Direct, verify profit diff
+- ✅ `test_i2_flash_loan_fee_exceeds_profit_skips` — Flash fee 10% > profit → Skip
+
+**I3 — Multi-target batch ordering (2 tests):**
+- ✅ `test_i3_multi_target_batch_ordering_5_targets` — 5 targets sorted by priority, unprofitable skipped
+- ✅ `test_i3_batch_ordering_with_concurrent_limit` — 6 targets, max_concurrent=3 → only top 3 execute
+
+**I4 — Circuit breaker → plan rejection (2 tests):**
+- ✅ `test_i4_circuit_breaker_blocks_entire_plan` — 3 failures → trip → all skip → cooldown → recovery
+- ✅ `test_i4_circuit_breaker_stats_accumulate` — 2 trips → stats accumulate correctly
+
+**I5 — Wallet/gas state changes (2 tests):**
+- ✅ `test_i5_plan_changes_with_token_availability` — No token→all FlashLoan, add token→all Direct
+- ✅ `test_i5_gas_price_blocks_all_targets` — Normal gas→execute, spike→skip, drop→execute
+
+**I6 — Full pipeline simulation (3 tests):**
+- ✅ `test_i6_full_pipeline_mixed_targets` — Storage→filter HF<1→profit calc→strategy→verify plan
+- ✅ `test_i6_pipeline_with_exposure_limits` — 3×$10k targets, max=$20k → only 2 execute
+- ✅ `test_i6_pipeline_stats_consistency` — 3 consecutive plans → stats accumulate correctly
+
+### Phase 3: Scenario Tests trên Anvil — chưa viết
 
 ```powershell
 # Bước 4a: Start Anvil fork
@@ -211,12 +209,12 @@ cargo run 2>&1 | Select-String "Strategy|Direct|FlashLoan|Skip|priority"
 ## 4. Acceptance Criteria
 
 ### ✅ PASS khi:
-- [ ] Tất cả 13+ unit tests hiện tại pass
-- [ ] Thêm ≥5 unit tests mới (U17-U22) và pass
-- [ ] ≥2 integration tests pass (I1, I2)
+- [x] Tất cả 24 unit tests gốc pass ← ĐÃ HOÀN THÀNH
+- [x] Thêm ≥5 unit tests mới và pass ← ĐÃ HOÀN THÀNH (thêm 7, tổng 31)
+- [x] ≥2 integration tests pass (I1, I2) ← ĐÃ HOÀN THÀNH (13 tests pass)
 - [ ] ≥1 scenario test pass trên Anvil (S1)
 - [ ] `cargo clippy` không có warning mới
-- [ ] `cargo build` thành công (0 errors)
+- [x] `cargo build` thành công (0 errors) ← ĐÃ HOÀN THÀNH
 
 ### ❌ FAIL khi:
 - Bất kỳ unit test nào fail

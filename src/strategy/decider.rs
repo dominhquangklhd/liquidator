@@ -47,6 +47,9 @@ pub struct StrategyDecider {
     /// Trạng thái circuit breaker
     circuit_breaker: Arc<RwLock<CircuitBreaker>>,
     
+    /// Gas price hiện tại (gwei) — updated bởi external worker
+    current_gas_price_gwei: Arc<RwLock<f64>>,
+    
     /// Thống kê
     stats: Arc<RwLock<StrategyStats>>,
 }
@@ -104,6 +107,7 @@ impl StrategyDecider {
             wallet_balance_eth: Arc::new(RwLock::new(10.0)), // Default 10 ETH
             wallet_token_balances: Arc::new(RwLock::new(std::collections::HashMap::new())),
             circuit_breaker: Arc::new(RwLock::new(CircuitBreaker::default())),
+            current_gas_price_gwei: Arc::new(RwLock::new(0.0)), // 0 = unknown/ok
             stats: Arc::new(RwLock::new(StrategyStats::default())),
         }
     }
@@ -131,7 +135,8 @@ impl StrategyDecider {
         // ── Lấy context hiện tại ──
         let wallet_eth = *self.wallet_balance_eth.read().await;
         let token_balances = self.wallet_token_balances.read().await.clone();
-        let gas_price_ok = true; // TODO: check gas price from oracle
+        let current_gas = *self.current_gas_price_gwei.read().await;
+        let gas_price_ok = current_gas <= 0.0 || current_gas <= self.config.max_gas_price_gwei;
         
         // ── Decide method + calculate priority cho mỗi target ──
         let mut prioritized: Vec<PrioritizedTarget> = Vec::new();
@@ -575,6 +580,12 @@ impl StrategyDecider {
         balances.insert(asset, balance_usd);
     }
     
+    /// Cập nhật gas price hiện tại (gwei)
+    pub async fn update_gas_price(&self, gas_price_gwei: f64) {
+        let mut gas = self.current_gas_price_gwei.write().await;
+        *gas = gas_price_gwei;
+    }
+    
     /// Lấy stats
     pub async fn get_stats(&self) -> StrategyStats {
         self.stats.read().await.clone()
@@ -926,5 +937,196 @@ mod tests {
         assert_eq!(stats.total_decisions, 2);
         assert_eq!(stats.total_plans, 1);
         assert!(stats.direct_count >= 1 || stats.skip_count >= 1);
+    }
+    
+    // ── U22: Circuit breaker cooldown recovery ──
+    
+    #[tokio::test]
+    async fn test_circuit_breaker_cooldown_recovery() {
+        let mut config = StrategyConfig::local_fork();
+        config.circuit_breaker_threshold = 2;
+        config.circuit_breaker_cooldown_secs = 1; // 1 giây cooldown cho test nhanh
+        let decider = StrategyDecider::new(config);
+        
+        // Trip circuit breaker
+        decider.report_failure().await;
+        decider.report_failure().await;
+        assert!(decider.is_circuit_breaker_active().await);
+        
+        // Plan nên trả empty khi breaker active
+        let inputs = vec![
+            (mock_target("0x1", 0.90, 10_000.0), mock_estimate("0x1", 400.0, 10_000.0, "USDC")),
+        ];
+        let plan = decider.create_plan(inputs).await.unwrap();
+        assert_eq!(plan.execute_count, 0, "Should skip all while circuit breaker active");
+        
+        // Đợi cooldown hết (1 giây)
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        
+        // Sau cooldown → breaker tự reset → targets được xử lý
+        assert!(!decider.is_circuit_breaker_active().await, "Circuit breaker should reset after cooldown");
+        
+        decider.update_wallet_balance(10.0).await;
+        decider.update_token_balance("USDC".to_string(), 50_000.0).await;
+        
+        let inputs2 = vec![
+            (mock_target("0x2", 0.90, 10_000.0), mock_estimate("0x2", 400.0, 10_000.0, "USDC")),
+        ];
+        let plan2 = decider.create_plan(inputs2).await.unwrap();
+        assert_eq!(plan2.execute_count, 1, "Should execute after cooldown recovery");
+    }
+    
+    // ── U17: Gas price too high → Skip ──
+    
+    #[tokio::test]
+    async fn test_gas_price_too_high_skips() {
+        let mut config = StrategyConfig::local_fork();
+        config.max_gas_price_gwei = 50.0; // Max 50 gwei
+        let decider = StrategyDecider::new(config);
+        
+        decider.update_wallet_balance(10.0).await;
+        decider.update_token_balance("USDC".to_string(), 50_000.0).await;
+        
+        // Set gas price vượt limit
+        decider.update_gas_price(100.0).await; // 100 gwei > max 50
+        
+        let inputs = vec![
+            (mock_target("0x1", 0.90, 10_000.0), mock_estimate("0x1", 400.0, 10_000.0, "USDC")),
+        ];
+        let plan = decider.create_plan(inputs).await.unwrap();
+        
+        // Target phải bị skip do gas quá cao
+        assert_eq!(plan.execute_count, 0, "Should skip when gas price > max");
+        assert_eq!(plan.skip_count, 1);
+        
+        // Giảm gas price xuống dưới limit → target được execute
+        decider.update_gas_price(30.0).await; // 30 gwei < max 50
+        
+        let inputs2 = vec![
+            (mock_target("0x2", 0.90, 10_000.0), mock_estimate("0x2", 400.0, 10_000.0, "USDC")),
+        ];
+        let plan2 = decider.create_plan(inputs2).await.unwrap();
+        assert_eq!(plan2.execute_count, 1, "Should execute when gas price drops");
+    }
+    
+    // ── U18: Negative profit → Skip ──
+    
+    #[tokio::test]
+    async fn test_negative_profit_skips() {
+        let config = StrategyConfig::local_fork();
+        let decider = StrategyDecider::new(config);
+        
+        decider.update_wallet_balance(10.0).await;
+        decider.update_token_balance("USDC".to_string(), 50_000.0).await;
+        
+        // Profit âm → estimate.is_profitable = false
+        let inputs = vec![
+            (mock_target("0xloss", 0.90, 10_000.0), mock_estimate("0xloss", -50.0, 10_000.0, "USDC")),
+        ];
+        let plan = decider.create_plan(inputs).await.unwrap();
+        
+        assert_eq!(plan.execute_count, 0, "Should not execute unprofitable target");
+        assert_eq!(plan.skip_count, 1);
+        assert!(matches!(
+            plan.targets[0].decision.method,
+            ExecutionMethod::Skip { .. }
+        ));
+    }
+    
+    // ── U19: Empty input → empty plan ──
+    
+    #[tokio::test]
+    async fn test_empty_input_returns_empty_plan() {
+        let config = StrategyConfig::local_fork();
+        let decider = StrategyDecider::new(config);
+        
+        let plan = decider.create_plan(vec![]).await.unwrap();
+        
+        assert_eq!(plan.total_input, 0);
+        assert_eq!(plan.execute_count, 0);
+        assert_eq!(plan.skip_count, 0);
+        assert!(plan.targets.is_empty());
+    }
+    
+    // ── U20: Wallet balance update affects decisions ──
+    
+    #[tokio::test]
+    async fn test_wallet_balance_update_affects_decisions() {
+        let config = StrategyConfig::local_fork(); // flash_loan_available = false
+        let decider = StrategyDecider::new(config);
+        
+        let target = mock_target("0xuser", 0.90, 10_000.0);
+        let estimate = mock_estimate("0xuser", 300.0, 10_000.0, "USDC");
+        
+        // ETH quá thấp (< min 0.1), no flash loan → Skip
+        decider.update_wallet_balance(0.01).await;
+        let d1 = decider.decide_single(&target, &estimate).await;
+        assert!(matches!(d1.method, ExecutionMethod::Skip { .. }), "Too low ETH should Skip");
+        
+        // Cập nhật ETH đủ → có thể execute (nếu có token)
+        decider.update_wallet_balance(5.0).await;
+        decider.update_token_balance("USDC".to_string(), 10_000.0).await;
+        let d2 = decider.decide_single(&target, &estimate).await;
+        assert!(matches!(d2.method, ExecutionMethod::Direct { .. }), "Enough ETH + token should Direct");
+    }
+    
+    // ── U21: Token balance update affects Direct/FlashLoan ──
+    
+    #[tokio::test]
+    async fn test_token_balance_update_affects_method() {
+        let mut config = StrategyConfig::local_fork();
+        config.flash_loan_available = true; // Enable flash loan
+        let decider = StrategyDecider::new(config);
+        
+        decider.update_wallet_balance(5.0).await;
+        
+        let target = mock_target("0xuser", 0.90, 10_000.0);
+        let estimate = mock_estimate("0xuser", 300.0, 10_000.0, "USDC");
+        
+        // Không có USDC → Flash Loan
+        let d1 = decider.decide_single(&target, &estimate).await;
+        assert!(matches!(d1.method, ExecutionMethod::FlashLoan { .. }), "No token → FlashLoan");
+        
+        // Thêm đủ USDC → Direct
+        decider.update_token_balance("USDC".to_string(), 10_000.0).await;
+        let d2 = decider.decide_single(&target, &estimate).await;
+        assert!(matches!(d2.method, ExecutionMethod::Direct { .. }), "Enough token → Direct");
+        
+        // Direct nên có profit cao hơn (không mất flash loan fee)
+        assert!(d2.adjusted_profit_usd > d1.adjusted_profit_usd, 
+            "Direct should have higher profit than FlashLoan");
+    }
+    
+    // ── U23: Per-liquidation exposure limit ──
+    
+    #[tokio::test]
+    async fn test_per_liquidation_exposure_limit() {
+        let mut config = StrategyConfig::local_fork();
+        config.max_single_exposure_usd = 3_000.0; // Max $3k per target
+        let decider = StrategyDecider::new(config);
+        
+        decider.update_wallet_balance(10.0).await;
+        decider.update_token_balance("USDC".to_string(), 100_000.0).await;
+        
+        let inputs = vec![
+            // debt_to_cover = 8000*0.5 = $4k > max $3k → skip
+            (mock_target("0xbig", 0.85, 8_000.0), mock_estimate("0xbig", 500.0, 8_000.0, "USDC")),
+            // debt_to_cover = 4000*0.5 = $2k < max $3k → execute
+            (mock_target("0xok", 0.90, 4_000.0), mock_estimate("0xok", 200.0, 4_000.0, "USDC")),
+            // debt_to_cover = 2000*0.5 = $1k < max $3k → execute
+            (mock_target("0xsmall", 0.92, 2_000.0), mock_estimate("0xsmall", 100.0, 2_000.0, "USDC")),
+        ];
+        
+        let plan = decider.create_plan(inputs).await.unwrap();
+        
+        assert_eq!(plan.execute_count, 2, "Only 2 below single exposure limit");
+        assert_eq!(plan.skip_count, 1, "1 exceeds single exposure limit");
+        
+        // Verify the skipped one is 0xbig
+        let skipped: Vec<_> = plan.targets.iter()
+            .filter(|pt| !pt.decision.should_execute())
+            .collect();
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].decision.user_address, "0xbig");
     }
 }
