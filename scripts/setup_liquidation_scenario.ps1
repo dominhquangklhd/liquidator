@@ -241,25 +241,30 @@ $ethPriceBase = [decimal]$ethPriceClean  # 8-decimal USD
 $ethPriceUSD = [math]::Round($ethPriceBase / 1e8, 2)
 Write-Host "  [i] ETH price (Aave Oracle): `$$ethPriceUSD" -ForegroundColor Gray
 
-# Borrow target = 90% of pool USDC (de lai buffer)
-$borrowTargetUsdc = [math]::Floor($poolUsdcAmount * 0.90)
-$borrowTargetUSD = [math]::Round($borrowTargetUsdc / 1e6, 2)
-Write-Host "  [i] Borrow target: $borrowTargetUSD USDC (90% of pool)" -ForegroundColor Gray
-
-# Tinh WETH can supply: borrow = collateral * LTV 
-# => collateral = borrow / LTV => weth = collateral_usd / eth_price
-# Them 5% buffer de du borrow capacity
+# ── Tinh WETH can supply ──
+# Muc tieu: supply 50 WETH => co du collateral vay ~$80-95k USDC
+# Gioi han hop ly trong 1-50 WETH (Anvil account co 10,000 ETH)
 $ltvRatio = 0.80
-$borrowTargetBase8 = $borrowTargetUsdc * 100  # 6-decimal -> 8-decimal USD
-$neededCollateralBase8 = $borrowTargetBase8 / $ltvRatio
-$neededWethRaw = $neededCollateralBase8 / $ethPriceBase  # in ETH units
-$neededWethWithBuffer = $neededWethRaw * 1.05  # +5% buffer
-$neededWethWei = [math]::Ceiling($neededWethWithBuffer * 1e18)
+$maxSupplyETH = 50   # Max 50 WETH supply
 
-# Cap: min 1 WETH, max 100 WETH
-if ($neededWethWei -lt 1e18) { $neededWethWei = [long]1000000000000000000 }
-if ($neededWethWei -gt 100e18) { $neededWethWei = [long](100e18) }
-$supplyWethETH = [math]::Round([decimal]$neededWethWei / 1e18, 4)
+# Borrow target = min(90% pool, collateral capacity)
+$maxCollateralUSD = $maxSupplyETH * $ethPriceUSD
+$maxBorrowFromCollateral = $maxCollateralUSD * $ltvRatio
+$borrowTargetUsdc6 = [math]::Min([math]::Floor($poolUsdcAmount * 0.90), $maxBorrowFromCollateral * 1e6)
+$borrowTargetUSD = [math]::Round($borrowTargetUsdc6 / 1e6, 2)
+Write-Host "  [i] Borrow target: $borrowTargetUSD USDC" -ForegroundColor Gray
+
+# WETH can supply = borrow / LTV / ethPrice (voi +5% buffer)
+$neededCollateralUSD = $borrowTargetUSD / $ltvRatio
+$neededWethETH = $neededCollateralUSD / $ethPriceUSD * 1.05  # +5% buffer
+
+# Cap: min 1 WETH, max 50 WETH
+if ($neededWethETH -lt 1) { $neededWethETH = 1 }
+if ($neededWethETH -gt $maxSupplyETH) { $neededWethETH = $maxSupplyETH }
+$supplyWethETH = [math]::Round($neededWethETH, 4)
+
+# Convert to wei dung [decimal] (tranh overflow Int64)
+$neededWethWei = [decimal]([math]::Ceiling($supplyWethETH * 1e18))
 
 Write-Host "  [i] Supply: ~$supplyWethETH WETH (du de vay $borrowTargetUSD USDC)" -ForegroundColor Gray
 
@@ -268,7 +273,7 @@ Write-Host "  [i] Supply: ~$supplyWethETH WETH (du de vay $borrowTargetUSD USDC)
 # ============================================================================
 Write-Step "1/8" "Wrap ETH -> WETH cho Borrower"
 
-$wrapAmount = [math]::Ceiling([decimal]$neededWethWei / 1e18)  # Round up
+$wrapAmount = [math]::Ceiling($supplyWethETH)  # Round up to whole ETH
 $result = Invoke-CastSend "$WETH `"deposit()`" --value ${wrapAmount}ether --private-key $BORROWER_KEY"
 if ($null -eq $result) { Write-Host "  [X] Wrap ETH that bai!" -ForegroundColor Red; exit 1 }
 Write-Host "  [OK] Wrapped $wrapAmount ETH -> WETH" -ForegroundColor Green
@@ -291,7 +296,7 @@ Write-Host "  [OK] WETH approved" -ForegroundColor Green
 # ============================================================================
 Write-Step "3/8" "Supply WETH vao Aave lam Collateral"
 
-$supplyAmount = $neededWethWei.ToString()
+$supplyAmount = $neededWethWei.ToString("0")  # decimal -> string (no scientific notation)
 Write-Host "  [>] Supplying $supplyWethETH WETH..." -ForegroundColor Gray
 $result = Invoke-CastSend "$AAVE_POOL `"supply(address,uint256,address,uint16)`" $WETH $supplyAmount $BORROWER 0 --private-key $BORROWER_KEY"
 if ($null -eq $result) { Write-Host "  [X] Supply that bai!" -ForegroundColor Red; exit 1 }
