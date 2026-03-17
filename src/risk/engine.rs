@@ -70,6 +70,7 @@ impl RiskEngine {
 
         for user_id in affected_users {
             if let Some(mut user) = self.users.get_mut(&user_id) {
+                let old_hf = user.health_factor;
                 let new_hf = HealthFactorCalculator::calculate(&user, &asset_snapshot);
                 let old_bucket = user.risk_bucket;
                 let new_bucket = RiskBucket::from_hf(new_hf);
@@ -88,9 +89,9 @@ impl RiskEngine {
                     tracing::warn!("LIQUIDATION ALERT: User {} HF {:.4}", user_id, new_hf);
                 }
 
-                // Build LiquidationTarget for users approaching liquidation threshold.
-                // Threshold 1.3 ensures we track users before they actually cross 1.0.
-                if new_hf < 1.3 {
+                // Build LiquidationTarget for users within (or recently within) the pre-tracking range.
+                // This ensures cache entries are also removed when a user recovers and exits the range.
+                if new_hf < 1.3 || old_hf < 1.3 {
                     // Rough USD values using price_in_eth * $2000 (good enough for ordering targets)
                     let total_collateral_usd: f64 = user.collateral.iter()
                         .filter_map(|(aid, amount)| {

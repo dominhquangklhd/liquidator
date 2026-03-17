@@ -39,6 +39,17 @@ impl HotCache {
     
     /// Insert or update a target
     pub fn insert(&mut self, target: LiquidationTarget) {
+        // Guard against invalid floating-point values that break ordering semantics.
+        if !target.health_factor.is_finite() {
+            tracing::warn!(
+                "Skipping cache insert for {} due to invalid HF: {}",
+                target.user_address,
+                target.health_factor
+            );
+            self.remove(&target.user_address);
+            return;
+        }
+
         // Only cache if below threshold
         if target.health_factor >= self.threshold {
             // Remove if exists (user improved their HF)

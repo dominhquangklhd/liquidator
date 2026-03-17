@@ -176,6 +176,11 @@ impl ColdStorage {
         }
         
         let mut tx = self.pool.begin().await?;
+
+        // Reset previous snapshot. Current sync batch will mark active hot targets.
+        sqlx::query("UPDATE users SET in_hot_cache = 0")
+            .execute(&mut *tx)
+            .await?;
         
         for target in targets {
             let collateral_json = serde_json::to_string(&target.collateral)?;
@@ -187,7 +192,7 @@ impl ColdStorage {
                     user_address, health_factor, total_collateral_usd, total_debt_usd,
                     ltv, liquidation_threshold, collateral_json, debt_json,
                     estimated_profit, risk_score, last_updated, in_hot_cache
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
                 ON CONFLICT(user_address) DO UPDATE SET
                     health_factor = excluded.health_factor,
                     total_collateral_usd = excluded.total_collateral_usd,
@@ -198,7 +203,8 @@ impl ColdStorage {
                     debt_json = excluded.debt_json,
                     estimated_profit = excluded.estimated_profit,
                     risk_score = excluded.risk_score,
-                    last_updated = excluded.last_updated
+                    last_updated = excluded.last_updated,
+                    in_hot_cache = 1
                 "#
             )
             .bind(&target.user_address)

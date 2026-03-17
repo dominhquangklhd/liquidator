@@ -15,6 +15,7 @@ pub use database::ColdStorage;
 pub use models::{LiquidationTarget, HistoricalSnapshot, LiquidationEvent};
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::RwLock;
 use anyhow::Result;
 
@@ -31,6 +32,10 @@ pub struct HybridStorage {
     
     /// Configuration
     config: StorageConfig,
+
+    /// Cache read metrics
+    cache_hits: AtomicU64,
+    cache_misses: AtomicU64,
 }
 
 #[derive(Debug, Clone)]
@@ -97,6 +102,8 @@ impl HybridStorage {
             hot_cache,
             cold_storage,
             config,
+            cache_hits: AtomicU64::new(0),
+            cache_misses: AtomicU64::new(0),
         })
     }
     
@@ -110,7 +117,13 @@ impl HybridStorage {
     /// Latency: < 1ms
     pub async fn get_top_targets(&self, limit: usize) -> Vec<LiquidationTarget> {
         let cache = self.hot_cache.read().await;
-        cache.get_top(limit)
+        let targets = cache.get_top(limit);
+        if targets.is_empty() {
+            self.cache_misses.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.cache_hits.fetch_add(1, Ordering::Relaxed);
+        }
+        targets
     }
     
     /// Update user health factor (fast path)
@@ -224,11 +237,19 @@ impl HybridStorage {
         };
         
         let total_users = self.cold_storage.count_users().await.unwrap_or(0);
+        let hits = self.cache_hits.load(Ordering::Relaxed);
+        let misses = self.cache_misses.load(Ordering::Relaxed);
+        let total_reads = hits + misses;
+        let hit_rate = if total_reads == 0 {
+            0.0
+        } else {
+            hits as f64 / total_reads as f64
+        };
         
         StorageStats {
             hot_cache_size: cache_size,
             total_users_tracked: total_users,
-            cache_hit_rate: 0.0, // TODO: Track this metric
+            cache_hit_rate: hit_rate,
         }
     }
 }
