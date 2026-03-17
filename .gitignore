@@ -16,3 +16,6 @@
 # Ignore build artifacts and temporary files
 /cache
 /out
+
+# Ignore documentation files
+/docs
