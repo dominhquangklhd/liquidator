@@ -65,7 +65,7 @@ impl AaveProvider {
     }
 
     /// Subscribe to new blocks (polling)
-    pub async fn watch_blocks(&self) -> Result<()> {
+    pub async fn watch_blocks(&self, tx: mpsc::Sender<crate::events::event::Event>) -> Result<()> {
         tracing::info!("Starting block watcher...");
         
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(12));
@@ -79,9 +79,12 @@ impl AaveProvider {
                     if current_block > last_block {
                         tracing::info!("New block: {} (previous: {})", current_block, last_block);
                         last_block = current_block;
-                        
-                        // TODO: Fetch block details and emit events
-                        // Có thể fetch transactions trong block để phân tích
+
+                        if let Err(e) = tx.send(crate::events::event::Event::Block {
+                            block_number: current_block.as_u64(),
+                        }).await {
+                            tracing::error!("Failed to send Block event: {:?}", e);
+                        }
                     }
                 }
                 Err(e) => {

@@ -129,8 +129,9 @@ async fn main() {
     // 5.2 Block Watcher Worker
     // Theo dõi các blocks mới trên blockchain
     let provider_for_blocks = Arc::clone(&provider);
+    let tx_for_blocks = tx.clone();
     tokio::spawn(async move {
-        if let Err(e) = provider_for_blocks.watch_blocks().await {
+        if let Err(e) = provider_for_blocks.watch_blocks(tx_for_blocks).await {
             tracing::error!("Block watcher error: {:?}", e);
         }
     });

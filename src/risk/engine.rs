@@ -1,6 +1,8 @@
 use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
 use dashmap::DashMap;
 use tokio::sync::mpsc;
+use tokio::sync::RwLock;
 use crate::data::asset::{Asset, AssetId};
 use crate::data::user::{User, UserId};
 use crate::data::registry::Registry;
@@ -9,22 +11,48 @@ use crate::risk::bucket::RiskBucket;
 use crate::risk::health_factor::HealthFactorCalculator;
 use crate::storage::{HybridStorage, LiquidationTarget};
 
+#[derive(Debug, Clone)]
+pub struct RiskEngineConfig {
+    /// Temporary HF penalty applied on mempool events before block confirmation.
+    pub mempool_speculative_hf_penalty: f64,
+}
+
+impl Default for RiskEngineConfig {
+    fn default() -> Self {
+        Self {
+            mempool_speculative_hf_penalty: 0.03,
+        }
+    }
+}
+
 pub struct RiskEngine {
     pub users: Arc<DashMap<UserId, User>>,
     pub assets: Arc<DashMap<AssetId, Asset>>,
     pub registry: Arc<Registry>,
     receiver: mpsc::Receiver<Event>,
     storage: Arc<HybridStorage>,
+    pending_users: Arc<RwLock<HashSet<UserId>>>,
+    config: RiskEngineConfig,
 }
 
 impl RiskEngine {
     pub fn new(receiver: mpsc::Receiver<Event>, storage: Arc<HybridStorage>) -> Self {
+        Self::with_config(receiver, storage, RiskEngineConfig::default())
+    }
+
+    pub fn with_config(
+        receiver: mpsc::Receiver<Event>,
+        storage: Arc<HybridStorage>,
+        config: RiskEngineConfig,
+    ) -> Self {
         Self {
             users: Arc::new(DashMap::new()),
             assets: Arc::new(DashMap::new()),
             registry: Arc::new(Registry::new()),
             receiver,
             storage,
+            pending_users: Arc::new(RwLock::new(HashSet::new())),
+            config,
         }
     }
 
@@ -37,10 +65,10 @@ impl RiskEngine {
                     self.handle_price_update(asset_id, new_price).await;
                 }
                 Event::MempoolTx { user_id, affected_assets } => {
-                    self.handle_mempool_tx(user_id, affected_assets);
+                    self.handle_mempool_tx(user_id, affected_assets).await;
                 }
                 Event::Block { block_number } => {
-                    self.handle_block(block_number);
+                    self.handle_block(block_number).await;
                 }
             }
         }
@@ -55,24 +83,95 @@ impl RiskEngine {
             return;
         }
 
-        // 2. Fetch affected users
+        // 2. Fetch affected users and run unified reevaluation pipeline.
         let affected_users = self.registry.get_users_for_asset(&asset_id);
         tracing::debug!("Price update for {} ({} users affected)", asset_id, affected_users.len());
+        self.recalculate_and_sync_users(affected_users, "price_update", false).await;
+    }
 
-        // 3. Snapshot assets into plain HashMap (avoids holding DashMap shard locks across .await)
-        let asset_snapshot: std::collections::HashMap<_, _> = self.assets.iter()
+    async fn handle_mempool_tx(&self, user_id: UserId, affected_assets: Vec<AssetId>) {
+        tracing::debug!(
+            "Mempool tx detected for user {} (assets: {:?})",
+            user_id,
+            affected_assets
+        );
+
+        // 1) Mark directly involved user for next block reconciliation.
+        {
+            let mut pending = self.pending_users.write().await;
+            pending.insert(user_id.clone());
+        }
+
+        // 2) Also mark other users exposed to affected assets.
+        let mut impacted: HashSet<UserId> = HashSet::from([user_id]);
+        for asset_id in affected_assets {
+            for uid in self.registry.get_users_for_asset(&asset_id) {
+                impacted.insert(uid);
+            }
+        }
+
+        {
+            let mut pending = self.pending_users.write().await;
+            for uid in &impacted {
+                pending.insert(uid.clone());
+            }
+        }
+
+        // 3) Speculative fast-path update so storage/executor can react before next block.
+        self.recalculate_and_sync_users(impacted.into_iter().collect(), "mempool", true).await;
+    }
+
+    async fn handle_block(&self, block_number: u64) {
+        tracing::info!("New block: {}", block_number);
+
+        // Reconcile users touched by mempool events at each new block.
+        let users_to_reconcile = {
+            let mut pending = self.pending_users.write().await;
+            let users = pending.iter().cloned().collect::<Vec<_>>();
+            pending.clear();
+            users
+        };
+
+        if users_to_reconcile.is_empty() {
+            return;
+        }
+
+        tracing::debug!(
+            "Block {} reconciliation for {} pending users",
+            block_number,
+            users_to_reconcile.len()
+        );
+        self.recalculate_and_sync_users(users_to_reconcile, "block_reconcile", false).await;
+    }
+
+    async fn recalculate_and_sync_users(
+        &self,
+        user_ids: Vec<UserId>,
+        reason: &str,
+        speculative_penalty: bool,
+    ) {
+        if user_ids.is_empty() {
+            return;
+        }
+
+        // Snapshot assets once for deterministic cross-event recompute.
+        let asset_snapshot: HashMap<_, _> = self.assets.iter()
             .map(|r| (r.key().clone(), r.value().clone()))
             .collect();
 
-        // 4. Re-evaluate each user; collect targets that need storage update.
-        //    All DashMap writes complete before the first .await so no lock is held across await.
         let tracking_threshold = self.storage.hot_cache_threshold();
         let mut targets_to_update: Vec<LiquidationTarget> = Vec::new();
 
-        for user_id in affected_users {
+        for user_id in user_ids {
             if let Some(mut user) = self.users.get_mut(&user_id) {
                 let old_hf = user.health_factor;
-                let new_hf = HealthFactorCalculator::calculate(&user, &asset_snapshot);
+                let mut new_hf = HealthFactorCalculator::calculate(&user, &asset_snapshot);
+
+                if speculative_penalty {
+                    // Pending mempool tx may worsen position before block inclusion.
+                    new_hf = (new_hf - self.config.mempool_speculative_hf_penalty).max(0.0);
+                }
+
                 let old_bucket = user.risk_bucket;
                 let new_bucket = RiskBucket::from_hf(new_hf);
 
@@ -81,19 +180,20 @@ impl RiskEngine {
 
                 if new_bucket != old_bucket {
                     tracing::info!(
-                        "User {} bucket change: {:?} -> {:?} (HF: {:.4})",
-                        user_id, old_bucket, new_bucket, new_hf
+                        "[{}] User {} bucket change: {:?} -> {:?} (HF: {:.4})",
+                        reason,
+                        user_id,
+                        old_bucket,
+                        new_bucket,
+                        new_hf
                     );
                 }
 
                 if new_bucket == RiskBucket::Liquidate {
-                    tracing::warn!("LIQUIDATION ALERT: User {} HF {:.4}", user_id, new_hf);
+                    tracing::warn!("[{}] LIQUIDATION ALERT: User {} HF {:.4}", reason, user_id, new_hf);
                 }
 
-                // Build LiquidationTarget for users within (or recently within) the tracking range.
-                // This ensures cache entries are removed when a user recovers above threshold.
                 if new_hf < tracking_threshold || old_hf < tracking_threshold {
-                    // Rough USD values using price_in_eth * $2000 (good enough for ordering targets)
                     let total_collateral_usd: f64 = user.collateral.iter()
                         .filter_map(|(aid, amount)| {
                             asset_snapshot.get(aid).map(|a| amount * a.price_in_eth * 2000.0)
@@ -109,7 +209,6 @@ impl RiskEngine {
                     } else {
                         0.0
                     };
-                    // risk_score 1-10: lower HF = higher urgency
                     let risk_score = ((1.5 - new_hf) / 0.5 * 10.0).clamp(1.0, 10.0) as u8;
 
                     targets_to_update.push(LiquidationTarget {
@@ -121,29 +220,18 @@ impl RiskEngine {
                         liquidation_threshold: 0.85,
                         collateral: user.collateral.clone(),
                         debt: user.debt.clone(),
-                        estimated_profit: 0.0, // filled by ProfitCalculator in executor_worker
+                        estimated_profit: 0.0,
                         risk_score,
                         last_updated: chrono::Utc::now().timestamp(),
                     });
                 }
-            } // DashMap lock released here
-        }
-
-        // 5. Push targets to hot cache (safe to await — all DashMap locks released above)
-        for target in targets_to_update {
-            if let Err(e) = self.storage.update_user_hf(target).await {
-                tracing::error!("Failed to update storage: {:?}", e);
             }
         }
-    }
 
-    fn handle_mempool_tx(&self, user_id: UserId, _affected_assets: Vec<AssetId>) {
-         // Logic to simulate bucket change
-         // For now, just logging
-         tracing::debug!("Mempool tx for user {}", user_id);
-    }
-
-    fn handle_block(&self, block_number: u64) {
-        tracing::info!("New block: {}", block_number);
+        for target in targets_to_update {
+            if let Err(e) = self.storage.update_user_hf(target).await {
+                tracing::error!("[{}] Failed to update storage: {:?}", reason, e);
+            }
+        }
     }
 }
