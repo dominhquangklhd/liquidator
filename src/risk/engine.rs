@@ -66,6 +66,7 @@ impl RiskEngine {
 
         // 4. Re-evaluate each user; collect targets that need storage update.
         //    All DashMap writes complete before the first .await so no lock is held across await.
+        let tracking_threshold = self.storage.hot_cache_threshold();
         let mut targets_to_update: Vec<LiquidationTarget> = Vec::new();
 
         for user_id in affected_users {
@@ -89,9 +90,9 @@ impl RiskEngine {
                     tracing::warn!("LIQUIDATION ALERT: User {} HF {:.4}", user_id, new_hf);
                 }
 
-                // Build LiquidationTarget for users within (or recently within) the pre-tracking range.
-                // This ensures cache entries are also removed when a user recovers and exits the range.
-                if new_hf < 1.3 || old_hf < 1.3 {
+                // Build LiquidationTarget for users within (or recently within) the tracking range.
+                // This ensures cache entries are removed when a user recovers above threshold.
+                if new_hf < tracking_threshold || old_hf < tracking_threshold {
                     // Rough USD values using price_in_eth * $2000 (good enough for ordering targets)
                     let total_collateral_usd: f64 = user.collateral.iter()
                         .filter_map(|(aid, amount)| {

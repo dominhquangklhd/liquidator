@@ -21,6 +21,7 @@ use crate::oracle::worker::{oracle_price_worker, oracle_stats_worker, oracle_hea
 use crate::profit::{ProfitCalculator, ProfitConfig, GasEstimator};
 use crate::strategy::{StrategyDecider, StrategyConfig};
 use crate::storage::HybridStorage;
+use crate::storage::sync::{stats_logger_worker, memory_monitor_worker};
 use crate::executor::{LiquidationExecutor, ExecutorConfig, WorkerConfig};
 use crate::executor::worker::{executor_worker, stats_worker, nonce_sync_worker};
 
@@ -91,6 +92,17 @@ async fn main() {
 
     // Spawn background sync worker: flushes hot cache -> SQLite every 5s
     let _sync_handle = Arc::clone(&storage).spawn_sync_worker();
+
+    // Storage observability workers
+    let storage_for_stats = Arc::clone(&storage);
+    tokio::spawn(async move {
+        stats_logger_worker(storage_for_stats, 30).await;
+    });
+
+    let storage_for_memory = Arc::clone(&storage);
+    tokio::spawn(async move {
+        memory_monitor_worker(storage_for_memory).await;
+    });
 
     // ============================================================================
     // PHASE 3: INITIALIZE RISK ENGINE
@@ -223,7 +235,17 @@ async fn main() {
                 "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed35a24fd173c1cdd3d3".to_string()
             });
 
-            let executor_config = ExecutorConfig::testnet(aave_pool_address);
+            let mut executor_config = ExecutorConfig::testnet(aave_pool_address);
+            executor_config.use_flash_loan = strategy_config.flash_loan_available;
+            executor_config.liquidator_contract = std::env::var("LIQUIDATOR_CONTRACT")
+                .ok()
+                .and_then(|addr| addr.parse().ok());
+
+            if strategy_config.flash_loan_available && executor_config.liquidator_contract.is_none() {
+                tracing::warn!(
+                    "Strategy has flash loan enabled but LIQUIDATOR_CONTRACT is not configured; flash-loan executions will fail"
+                );
+            }
 
             match LiquidationExecutor::new(
                 executor_config,
@@ -237,12 +259,14 @@ async fn main() {
                     let executor_for_worker = Arc::clone(&executor);
                     let storage_for_worker = Arc::clone(&storage);
                     let profit_for_worker  = Arc::clone(&profit_calculator);
+                    let strategy_for_worker = Arc::clone(&strategy_decider);
                     tokio::spawn(async move {
                         executor_worker(
                             executor_for_worker,
                             storage_for_worker,
                             WorkerConfig::default(),
                             Some(profit_for_worker),
+                            Some(strategy_for_worker),
                         ).await;
                     });
 
@@ -257,9 +281,6 @@ async fn main() {
                     tokio::spawn(async move {
                         nonce_sync_worker(executor_for_nonce, 30).await;
                     });
-
-                    // Suppress unused-variable warning for strategy_decider
-                    let _ = strategy_decider;
 
                     tracing::info!("✓ Executor workers spawned (dry_run=false)");
                 }

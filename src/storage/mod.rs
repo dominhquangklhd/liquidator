@@ -162,6 +162,11 @@ impl HybridStorage {
         let cache = self.hot_cache.read().await;
         cache.contains(user_address)
     }
+
+    /// Current hot-cache threshold used for target tracking decisions.
+    pub fn hot_cache_threshold(&self) -> f64 {
+        self.config.hot_cache_threshold
+    }
     
     /// Remove target from hot cache (after successful liquidation)
     pub async fn remove_target(&self, user_address: &str) {

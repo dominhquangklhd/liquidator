@@ -6,10 +6,16 @@
 use super::executor::{LiquidationExecutor, LiquidationResult};
 use crate::storage::{HybridStorage, LiquidationTarget, LiquidationEvent};
 use crate::profit::ProfitCalculator;
+use crate::strategy::{ExecutionMethod, StrategyDecider};
 
 use std::sync::Arc;
 use tokio::time::{interval, Duration};
-use anyhow::Result;
+
+#[derive(Debug, Clone)]
+struct PlannedExecution {
+    target: LiquidationTarget,
+    method: Option<ExecutionMethod>,
+}
 
 /// Executor worker configuration
 #[derive(Debug, Clone)]
@@ -54,14 +60,16 @@ pub async fn executor_worker(
     storage: Arc<HybridStorage>,
     config: WorkerConfig,
     profit_calc: Option<Arc<ProfitCalculator>>,
+    strategy_decider: Option<Arc<StrategyDecider>>,
 ) {
     let mut ticker = interval(Duration::from_millis(config.check_interval_ms));
     
     tracing::info!(
-        "Executor worker started (interval: {}ms, batch: {}, threshold: {})",
+        "Executor worker started (interval: {}ms, batch: {}, threshold: {}, strategy: {})",
         config.check_interval_ms,
         config.batch_size,
-        config.liquidation_threshold
+        config.liquidation_threshold,
+        if strategy_decider.is_some() { "enabled" } else { "disabled" }
     );
     
     loop {
@@ -86,49 +94,138 @@ pub async fn executor_worker(
         
         tracing::info!("Found {} liquidatable targets", liquidatable.len());
         
-        // ── Profit evaluation: chỉ execute targets thực sự profitable ──
-        let liquidatable = if let Some(ref calc) = profit_calc {
-            match calc.find_profitable(&liquidatable).await {
-                Ok(profitable_estimates) => {
-                    if profitable_estimates.is_empty() {
-                        tracing::debug!("No profitable targets after evaluation");
-                        continue;
-                    }
-                    
-                    tracing::info!(
-                        "Profit filter: {}/{} targets profitable",
-                        profitable_estimates.len(),
-                        liquidatable.len()
-                    );
-                    
-                    // Update estimated_profit trên mỗi target với giá trị thực tế
-                    // và chỉ giữ lại các target profitable
-                    let profitable_addresses: std::collections::HashMap<String, f64> = 
-                        profitable_estimates.iter()
-                            .map(|e| (e.user_address.clone(), e.net_profit_usd))
-                            .collect();
-                    
-                    liquidatable.into_iter()
-                        .filter_map(|mut t| {
-                            if let Some(&profit) = profitable_addresses.get(&t.user_address) {
-                                t.estimated_profit = profit;
-                                Some(t)
-                            } else {
-                                None
-                            }
-                        })
-                        .collect::<Vec<_>>()
+        // Keep strategy context in sync with current wallet balance.
+        if let Some(ref decider) = strategy_decider {
+            match executor.wallet_balance().await {
+                Ok(balance) => {
+                    decider.update_wallet_balance(balance.as_u128() as f64 / 1e18).await;
                 }
                 Err(e) => {
-                    tracing::warn!("Profit evaluation failed: {:?}, proceeding without filter", e);
-                    liquidatable
+                    tracing::debug!("Failed to refresh strategy wallet balance: {:?}", e);
                 }
+            }
+        }
+
+        // Profit evaluation + optional strategy planning.
+        let executable_targets = if let Some(ref calc) = profit_calc {
+            let estimates = match calc.evaluate_batch(&liquidatable).await {
+                Ok(estimates) => estimates,
+                Err(e) => {
+                    tracing::warn!("Profit evaluation failed: {:?}, proceeding without filter", e);
+                    Vec::new()
+                }
+            };
+
+            if estimates.is_empty() {
+                liquidatable
+                    .into_iter()
+                    .map(|target| PlannedExecution {
+                        target,
+                        method: None,
+                    })
+                    .collect::<Vec<_>>()
+            } else if let Some(ref decider) = strategy_decider {
+                let estimates_by_user: std::collections::HashMap<_, _> = estimates
+                    .iter()
+                    .map(|e| (e.user_address.clone(), e.clone()))
+                    .collect();
+
+                let pairs: Vec<_> = liquidatable
+                    .iter()
+                    .cloned()
+                    .filter_map(|target| {
+                        estimates_by_user
+                            .get(&target.user_address)
+                            .cloned()
+                            .map(|estimate| (target, estimate))
+                    })
+                    .collect();
+
+                match decider.create_plan(pairs).await {
+                    Ok(plan) => {
+                        if plan.execute_count == 0 {
+                            tracing::debug!("Strategy plan skipped all targets");
+                            continue;
+                        }
+
+                        let mut planned = Vec::with_capacity(plan.execute_count);
+                        for pt in plan.executable_targets() {
+                            let mut target = pt.target.clone();
+                            target.estimated_profit = pt.decision.adjusted_profit_usd;
+                            tracing::info!(
+                                "Strategy selected {} for {} (rank #{}, est=${:.2})",
+                                pt.decision.method.label(),
+                                target.user_address,
+                                pt.rank,
+                                target.estimated_profit
+                            );
+                            planned.push(PlannedExecution {
+                                target,
+                                method: Some(pt.decision.method.clone()),
+                            });
+                        }
+                        planned
+                    }
+                    Err(e) => {
+                        tracing::warn!("Strategy planning failed: {:?}, fallback to profitable filter", e);
+                        let profitable_by_user: std::collections::HashMap<_, _> = estimates
+                            .iter()
+                            .filter(|e| e.is_profitable)
+                            .map(|e| (e.user_address.clone(), e.net_profit_usd))
+                            .collect();
+
+                        liquidatable
+                            .into_iter()
+                            .filter_map(|mut t| {
+                                profitable_by_user.get(&t.user_address).map(|profit| {
+                                    t.estimated_profit = *profit;
+                                    PlannedExecution {
+                                        target: t,
+                                        method: None,
+                                    }
+                                })
+                            })
+                            .collect::<Vec<_>>()
+                    }
+                }
+            } else {
+                let profitable_by_user: std::collections::HashMap<_, _> = estimates
+                    .iter()
+                    .filter(|e| e.is_profitable)
+                    .map(|e| (e.user_address.clone(), e.net_profit_usd))
+                    .collect();
+
+                let filtered = liquidatable
+                    .into_iter()
+                    .filter_map(|mut t| {
+                        profitable_by_user.get(&t.user_address).map(|profit| {
+                            t.estimated_profit = *profit;
+                            PlannedExecution {
+                                target: t,
+                                method: None,
+                            }
+                        })
+                    })
+                    .collect::<Vec<_>>();
+
+                tracing::info!(
+                    "Profit filter: {}/{} targets profitable",
+                    filtered.len(),
+                    profitable_by_user.len()
+                );
+                filtered
             }
         } else {
             liquidatable
+                .into_iter()
+                .map(|target| PlannedExecution {
+                    target,
+                    method: None,
+                })
+                .collect::<Vec<_>>()
         };
         
-        if liquidatable.is_empty() {
+        if executable_targets.is_empty() {
             continue;
         }
         
@@ -137,20 +234,24 @@ pub async fn executor_worker(
             execute_parallel(
                 &executor,
                 &storage,
-                liquidatable,
+                executable_targets,
                 config.max_concurrent,
+                strategy_decider.clone(),
             ).await;
         } else {
             // Sequential execution
-            for target in liquidatable {
-                let result = executor.liquidate(&target).await;
+            for planned in executable_targets {
+                let result = execute_target(&executor, &planned).await;
                 
                 match result {
                     Ok(res) => {
-                        handle_result(&storage, &target, res).await;
+                        handle_result(&storage, &planned.target, res, strategy_decider.as_ref()).await;
                     }
                     Err(e) => {
-                        tracing::error!("Liquidation error for {}: {:?}", target.user_address, e);
+                        tracing::error!("Liquidation error for {}: {:?}", planned.target.user_address, e);
+                        if let Some(ref decider) = strategy_decider {
+                            decider.report_failure().await;
+                        }
                     }
                 }
             }
@@ -162,25 +263,30 @@ pub async fn executor_worker(
 async fn execute_parallel(
     executor: &Arc<LiquidationExecutor>,
     storage: &Arc<HybridStorage>,
-    targets: Vec<LiquidationTarget>,
+    targets: Vec<PlannedExecution>,
     max_concurrent: usize,
+    strategy_decider: Option<Arc<StrategyDecider>>,
 ) {
     use futures::stream::{self, StreamExt};
     
     stream::iter(targets)
-        .for_each_concurrent(max_concurrent, |target| {
+        .for_each_concurrent(max_concurrent, |planned| {
             let executor = Arc::clone(executor);
             let storage = Arc::clone(storage);
+            let strategy_decider = strategy_decider.clone();
             
             async move {
-                let result = executor.liquidate(&target).await;
+                let result = execute_target(&executor, &planned).await;
                 
                 match result {
                     Ok(res) => {
-                        handle_result(&storage, &target, res).await;
+                        handle_result(&storage, &planned.target, res, strategy_decider.as_ref()).await;
                     }
                     Err(e) => {
-                        tracing::error!("Liquidation error for {}: {:?}", target.user_address, e);
+                        tracing::error!("Liquidation error for {}: {:?}", planned.target.user_address, e);
+                        if let Some(ref decider) = strategy_decider {
+                            decider.report_failure().await;
+                        }
                     }
                 }
             }
@@ -188,13 +294,28 @@ async fn execute_parallel(
         .await;
 }
 
+async fn execute_target(
+    executor: &Arc<LiquidationExecutor>,
+    planned: &PlannedExecution,
+) -> anyhow::Result<LiquidationResult> {
+    match planned.method.as_ref() {
+        Some(method) => executor.liquidate_with_method(&planned.target, method).await,
+        None => executor.liquidate(&planned.target).await,
+    }
+}
+
 /// Handle liquidation result
 async fn handle_result(
     storage: &Arc<HybridStorage>,
     target: &LiquidationTarget,
     result: LiquidationResult,
+    strategy_decider: Option<&Arc<StrategyDecider>>,
 ) {
     if result.success {
+        if let Some(decider) = strategy_decider {
+            decider.report_success().await;
+        }
+
         // Remove from hot cache (no longer liquidatable)
         storage.remove_target(&target.user_address).await;
         
@@ -224,6 +345,10 @@ async fn handle_result(
             result.gas_used
         );
     } else {
+        if let Some(decider) = strategy_decider {
+            decider.report_failure().await;
+        }
+
         tracing::debug!(
             "❌ Liquidation failed for {}: {}",
             target.user_address,

@@ -5,12 +5,13 @@
 
 use super::config::ExecutorConfig;
 use super::nonce::NonceManager;
+use crate::strategy::ExecutionMethod;
 use crate::storage::LiquidationTarget;
 
 use ethers::prelude::*;
 use ethers::providers::{Provider, Http, Middleware};
 use ethers::signers::{LocalWallet, Signer};
-use ethers::types::{Address, U256, TransactionRequest, Bytes};
+use ethers::types::{Address, U256};
 use ethers::contract::abigen;
 
 use anyhow::{Result, Context, bail};
@@ -173,6 +174,26 @@ impl LiquidationExecutor {
     
     /// Execute liquidation on a target
     pub async fn liquidate(&self, target: &LiquidationTarget) -> Result<LiquidationResult> {
+        let default_method = if self.config.use_flash_loan {
+            ExecutionMethod::FlashLoan {
+                gas_limit: self.config.gas_limit,
+                fee_usd: 0.0,
+            }
+        } else {
+            ExecutionMethod::Direct {
+                gas_limit: self.config.gas_limit,
+            }
+        };
+
+        self.liquidate_with_method(target, &default_method).await
+    }
+
+    /// Execute liquidation with explicit strategy execution method.
+    pub async fn liquidate_with_method(
+        &self,
+        target: &LiquidationTarget,
+        method: &ExecutionMethod,
+    ) -> Result<LiquidationResult> {
         // Update stats
         {
             let mut stats = self.stats.write().await;
@@ -196,27 +217,46 @@ impl LiquidationExecutor {
         
         // Dry run mode
         if self.config.dry_run {
-            tracing::info!("[DRY RUN] Would liquidate {} (HF: {:.4})", 
-                target.user_address, target.health_factor);
+            tracing::info!(
+                "[DRY RUN] Would liquidate {} (HF: {:.4}, method: {})",
+                target.user_address,
+                target.health_factor,
+                method.label()
+            );
             return Ok(LiquidationResult::success(
                 "0x_dry_run".to_string(), 0, 0, 0.0, 0.0, target.estimated_profit
             ));
         }
-        
-        // Ensure debt token is approved to Aave Pool
-        if let Err(e) = self.ensure_approval(target).await {
-            return Ok(LiquidationResult::failed(format!("Approval failed: {}", e)));
-        }
-        
-        // Simulate first if configured
-        if self.config.simulate_before_execute {
-            if let Err(e) = self.simulate_liquidation(target).await {
-                return Ok(LiquidationResult::failed(format!("Simulation failed: {}", e)));
+
+        match method {
+            ExecutionMethod::Direct { gas_limit } => {
+                // Ensure debt token is approved to Aave Pool for direct path.
+                if let Err(e) = self.ensure_approval(target).await {
+                    return Ok(LiquidationResult::failed(format!("Approval failed: {}", e)));
+                }
+
+                if self.config.simulate_before_execute {
+                    if let Err(e) = self.simulate_liquidation(target).await {
+                        return Ok(LiquidationResult::failed(format!("Simulation failed: {}", e)));
+                    }
+                }
+
+                self.execute_direct_liquidation(target, Some(*gas_limit)).await
             }
+            ExecutionMethod::FlashLoan { gas_limit, fee_usd } => {
+                if self.config.simulate_before_execute {
+                    if let Err(e) = self.simulate_flash_loan_liquidation(target).await {
+                        return Ok(LiquidationResult::failed(format!("Flash-loan simulation failed: {}", e)));
+                    }
+                }
+
+                self.execute_flash_loan_liquidation(target, Some(*gas_limit), *fee_usd).await
+            }
+            ExecutionMethod::Skip { reason } => Ok(LiquidationResult::failed(format!(
+                "Strategy requested skip: {}",
+                reason
+            ))),
         }
-        
-        // Execute the liquidation
-        self.execute_liquidation(target).await
     }
     
     /// Pre-flight checks before liquidation
@@ -258,7 +298,7 @@ impl LiquidationExecutor {
         Ok(())
     }
     
-    /// Simulate liquidation using eth_call
+    /// Simulate direct liquidation using eth_call
     async fn simulate_liquidation(&self, target: &LiquidationTarget) -> Result<()> {
         let user_address: Address = target.user_address.parse()?;
         
@@ -304,9 +344,29 @@ impl LiquidationExecutor {
             }
         }
     }
+
+    /// Simulate flash-loan liquidation.
+    ///
+    /// Current codebase does not yet include flash-loan liquidator contract bindings,
+    /// so we validate only flash-loan prerequisites here.
+    async fn simulate_flash_loan_liquidation(&self, _target: &LiquidationTarget) -> Result<()> {
+        if !self.config.use_flash_loan {
+            bail!("Flash-loan mode is disabled in ExecutorConfig");
+        }
+
+        if self.config.liquidator_contract.is_none() {
+            bail!("ExecutorConfig.liquidator_contract is not configured");
+        }
+
+        Ok(())
+    }
     
-    /// Execute actual liquidation transaction
-    async fn execute_liquidation(&self, target: &LiquidationTarget) -> Result<LiquidationResult> {
+    /// Execute direct liquidation transaction via Aave Pool liquidationCall.
+    async fn execute_direct_liquidation(
+        &self,
+        target: &LiquidationTarget,
+        gas_limit_override: Option<u64>,
+    ) -> Result<LiquidationResult> {
         let user_address: Address = target.user_address.parse()?;
         
         // Get positions to liquidate
@@ -343,12 +403,18 @@ impl LiquidationExecutor {
         let gas_price = self.provider.get_gas_price().await?;
         
         // Estimate gas
-        let gas_estimate = call.estimate_gas().await.unwrap_or(U256::from(self.config.gas_limit));
+        let gas_estimate = call
+            .estimate_gas()
+            .await
+            .unwrap_or(U256::from(gas_limit_override.unwrap_or(self.config.gas_limit)));
         let gas_limit = gas_estimate * 120 / 100; // 20% buffer
         
         tracing::info!(
-            "Executing liquidation: user={}, debt={:.4} {}, nonce={}",
-            target.user_address, debt_to_cover_f64, debt_asset, nonce
+            "Executing DIRECT liquidation: user={}, debt={:.4} {}, nonce={}",
+            target.user_address,
+            debt_to_cover_f64,
+            debt_asset,
+            nonce
         );
         
         // Send transaction
@@ -448,6 +514,45 @@ impl LiquidationExecutor {
             
             Ok(LiquidationResult::failed(format!("Transaction reverted: {}", tx_hash)))
         }
+    }
+
+    /// Execute flash-loan liquidation transaction.
+    ///
+    /// This path is intentionally separated from direct execution and requires
+    /// a dedicated liquidator contract integration.
+    async fn execute_flash_loan_liquidation(
+        &self,
+        target: &LiquidationTarget,
+        gas_limit_override: Option<u64>,
+        fee_usd: f64,
+    ) -> Result<LiquidationResult> {
+        if !self.config.use_flash_loan {
+            return Ok(LiquidationResult::failed(
+                "Strategy selected FLASH_LOAN but ExecutorConfig.use_flash_loan=false".to_string(),
+            ));
+        }
+
+        let liquidator_contract = match self.config.liquidator_contract {
+            Some(addr) => addr,
+            None => {
+                return Ok(LiquidationResult::failed(
+                    "Strategy selected FLASH_LOAN but ExecutorConfig.liquidator_contract is missing"
+                        .to_string(),
+                ));
+            }
+        };
+
+        tracing::warn!(
+            "FLASH_LOAN path selected for {} (contract={:?}, gas_limit_hint={}, fee_usd={:.4}) but on-chain flash executor binding is not implemented yet",
+            target.user_address,
+            liquidator_contract,
+            gas_limit_override.unwrap_or(self.config.gas_limit),
+            fee_usd,
+        );
+
+        Ok(LiquidationResult::failed(
+            "Flash-loan execution path requires liquidator contract ABI/call integration".to_string(),
+        ))
     }
     
     /// Check if target is already being liquidated
