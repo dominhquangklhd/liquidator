@@ -101,8 +101,8 @@ pub async fn stats_logger_worker(storage: Arc<HybridStorage>, interval_secs: u64
 }
 
 /// Memory monitor: Ensure hot cache doesn't grow too large
-pub async fn memory_monitor_worker(storage: Arc<HybridStorage>) {
-    let mut ticker = interval(Duration::from_secs(30));
+pub async fn memory_monitor_worker(storage: Arc<HybridStorage>, interval_secs: u64) {
+    let mut ticker = interval(Duration::from_secs(interval_secs));
     
     loop {
         ticker.tick().await;

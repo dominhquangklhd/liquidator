@@ -11,7 +11,7 @@ mod strategy;
 
 use tokio::sync::mpsc;
 use std::sync::Arc;
-use crate::risk::engine::RiskEngine;
+use crate::risk::engine::{RiskEngine, RiskEngineConfig};
 use crate::events::event::Event;
 use crate::data::asset::Asset;
 use crate::data::user::User;
@@ -54,8 +54,8 @@ async fn main() {
     // ============================================================================
     
     // Kết nối đến Aave fork (local testnet hoặc mainnet fork)
-    let rpc_url = "http://127.0.0.1:8545";
-    let provider = match AaveProvider::new(rpc_url).await {
+    let rpc_url = env_string("RPC_URL", "http://127.0.0.1:8545");
+    let provider = match AaveProvider::new(&rpc_url).await {
         Ok(p) => {
             tracing::info!("✓ Connected to Aave fork at {}", rpc_url);
             Arc::new(p)
@@ -72,8 +72,9 @@ async fn main() {
     // ============================================================================
     
     // MPSC channel: Event watchers (producers) -> Risk Engine (consumer)
-    // Buffer size: 100 events
-    let (tx, rx) = mpsc::channel(100);
+    // Buffer size: configurable via EVENT_CHANNEL_CAPACITY
+    let event_channel_capacity = env_usize("EVENT_CHANNEL_CAPACITY", 100);
+    let (tx, rx) = mpsc::channel(event_channel_capacity);
 
     // ============================================================================
     // PHASE 2.5: INITIALIZE HYBRID STORAGE
@@ -94,21 +95,35 @@ async fn main() {
     let _sync_handle = Arc::clone(&storage).spawn_sync_worker();
 
     // Storage observability workers
+    let storage_stats_interval_secs = env_u64("STORAGE_STATS_INTERVAL_SECS", 30);
     let storage_for_stats = Arc::clone(&storage);
     tokio::spawn(async move {
-        stats_logger_worker(storage_for_stats, 30).await;
+        stats_logger_worker(storage_for_stats, storage_stats_interval_secs).await;
     });
 
+    let memory_monitor_interval_secs = env_u64("MEMORY_MONITOR_INTERVAL_SECS", 30);
     let storage_for_memory = Arc::clone(&storage);
     tokio::spawn(async move {
-        memory_monitor_worker(storage_for_memory).await;
+        memory_monitor_worker(storage_for_memory, memory_monitor_interval_secs).await;
     });
 
     // ============================================================================
     // PHASE 3: INITIALIZE RISK ENGINE
     // ============================================================================
     
-    let mut engine = RiskEngine::new(rx, Arc::clone(&storage));
+    let mut engine = RiskEngine::with_config(
+        rx,
+        Arc::clone(&storage),
+        RiskEngineConfig {
+            mempool_speculative_hf_penalty: env_f64("MEMPOOL_SPECULATIVE_HF_PENALTY", 0.03),
+            reference_eth_price_usd: env_f64("REFERENCE_ETH_PRICE_USD", 2000.0),
+            default_liquidation_threshold: env_f64("DEFAULT_LIQUIDATION_THRESHOLD", 0.85),
+            risk_score_hf_baseline: env_f64("RISK_SCORE_HF_BASELINE", 1.5),
+            risk_score_hf_span: env_f64("RISK_SCORE_HF_SPAN", 0.5),
+            risk_score_min: env_f64("RISK_SCORE_MIN", 1.0),
+            risk_score_max: env_f64("RISK_SCORE_MAX", 10.0),
+        },
+    );
 
     // ============================================================================
     // PHASE 4: POPULATE INITIAL DATA (SIMULATION)
@@ -143,9 +158,12 @@ async fn main() {
     // - Repay (trả nợ)
     // - Withdraw (rút collateral)
     // - Liquidation (thanh lý)
-    let aave_pool_address = "0xE7EC1B0015eb2ADEedb1B7f9F1Ce82F9DAD6dF08"
-        .parse()
-        .expect("Invalid Aave pool address");
+    let aave_pool_address = env_string(
+        "AAVE_POOL_ADDRESS",
+        "0xE7EC1B0015eb2ADEedb1B7f9F1Ce82F9DAD6dF08",
+    )
+    .parse()
+    .expect("Invalid Aave pool address");
     
     let provider_for_events = Arc::clone(&provider);
     let tx_for_events = tx.clone();
@@ -179,8 +197,8 @@ async fn main() {
             let oracle_for_price = Arc::clone(&oracle);
             let worker_config = OracleWorkerConfig {
                 poll_interval_ms: oracle_config.poll_interval_ms,
-                stats_interval_secs: 60,
-                health_check_interval_secs: 300,
+                stats_interval_secs: env_u64("ORACLE_STATS_INTERVAL_SECS", 60),
+                health_check_interval_secs: env_u64("ORACLE_HEALTH_INTERVAL_SECS", 300),
             };
             
             let price_worker_config = worker_config.clone();
@@ -238,6 +256,8 @@ async fn main() {
 
             let mut executor_config = ExecutorConfig::testnet(aave_pool_address);
             executor_config.use_flash_loan = strategy_config.flash_loan_available;
+            executor_config.simulate_before_execute = env_bool("EXECUTOR_SIMULATE_BEFORE_EXECUTE", executor_config.simulate_before_execute);
+            executor_config.dry_run = env_bool("EXECUTOR_DRY_RUN", executor_config.dry_run);
             executor_config.liquidator_contract = std::env::var("LIQUIDATOR_CONTRACT")
                 .ok()
                 .and_then(|addr| addr.parse().ok());
@@ -261,26 +281,35 @@ async fn main() {
                     let storage_for_worker = Arc::clone(&storage);
                     let profit_for_worker  = Arc::clone(&profit_calculator);
                     let strategy_for_worker = Arc::clone(&strategy_decider);
+                    let worker_config = WorkerConfig {
+                        check_interval_ms: env_u64("EXECUTOR_CHECK_INTERVAL_MS", 100),
+                        batch_size: env_usize("EXECUTOR_BATCH_SIZE", 10),
+                        liquidation_threshold: env_f64("EXECUTOR_LIQUIDATION_THRESHOLD", 1.0),
+                        parallel_execution: env_bool("EXECUTOR_PARALLEL_EXECUTION", false),
+                        max_concurrent: env_usize("EXECUTOR_MAX_CONCURRENT", 3),
+                    };
                     tokio::spawn(async move {
                         executor_worker(
                             executor_for_worker,
                             storage_for_worker,
-                            WorkerConfig::default(),
+                            worker_config,
                             Some(profit_for_worker),
                             Some(strategy_for_worker),
                         ).await;
                     });
 
                     // Stats logging worker: prints metrics every 60s
+                    let executor_stats_interval_secs = env_u64("EXECUTOR_STATS_INTERVAL_SECS", 60);
                     let executor_for_stats = Arc::clone(&executor);
                     tokio::spawn(async move {
-                        stats_worker(executor_for_stats, 60).await;
+                        stats_worker(executor_for_stats, executor_stats_interval_secs).await;
                     });
 
                     // Nonce sync worker: re-syncs on-chain nonce every 30s
+                    let nonce_sync_interval_secs = env_u64("EXECUTOR_NONCE_SYNC_INTERVAL_SECS", 30);
                     let executor_for_nonce = Arc::clone(&executor);
                     tokio::spawn(async move {
-                        nonce_sync_worker(executor_for_nonce, 30).await;
+                        nonce_sync_worker(executor_for_nonce, nonce_sync_interval_secs).await;
                     });
 
                     tracing::info!("✓ Executor workers spawned (dry_run=false)");
@@ -376,6 +405,42 @@ fn initialize_simulation_data(engine: &mut RiskEngine) {
     engine.registry.add_user_to_asset("USDC".to_string(), "user_risky".to_string());
     
     tracing::info!("✓ Initialized 2 assets and 2 users");
+}
+
+fn env_string(key: &str, default: &str) -> String {
+    std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+fn env_u64(key: &str, default: u64) -> u64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(default)
+}
+
+fn env_usize(key: &str, default: usize) -> usize {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(default)
+}
+
+fn env_f64(key: &str, default: f64) -> f64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(default)
+}
+
+fn env_bool(key: &str, default: bool) -> bool {
+    match std::env::var(key) {
+        Ok(v) => match v.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => true,
+            "0" | "false" | "no" | "off" => false,
+            _ => default,
+        },
+        Err(_) => default,
+    }
 }
 
 /// Worker mô phỏng sự kiện giá giảm (chỉ dùng để test)

@@ -1,9 +1,10 @@
 use ethers::{
     prelude::*,
     providers::{Provider, Http, Middleware},
-    types::{Filter, Log, H160},
+    types::{Filter, Log, H160, H256},
 };
 use anyhow::{Result, Context};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -11,6 +12,9 @@ use tokio::sync::mpsc;
 pub struct AaveProvider {
     provider: Arc<Provider<Http>>,
     chain_id: u64,
+    block_poll_interval_secs: u64,
+    event_poll_interval_secs: u64,
+    reserve_asset_map: HashMap<H160, String>,
 }
 
 impl AaveProvider {
@@ -39,10 +43,17 @@ impl AaveProvider {
             .context("Failed to get block number")?;
         
         tracing::info!("Current block number: {}", block);
+
+        let block_poll_interval_secs = env_u64("BLOCK_POLL_INTERVAL_SECS", 12);
+        let event_poll_interval_secs = env_u64("AAVE_EVENT_POLL_INTERVAL_SECS", 3);
+        let reserve_asset_map = load_reserve_asset_map();
         
         Ok(Self {
             provider,
             chain_id,
+            block_poll_interval_secs,
+            event_poll_interval_secs,
+            reserve_asset_map,
         })
     }
 
@@ -66,9 +77,13 @@ impl AaveProvider {
 
     /// Subscribe to new blocks (polling)
     pub async fn watch_blocks(&self, tx: mpsc::Sender<crate::events::event::Event>) -> Result<()> {
-        tracing::info!("Starting block watcher...");
+        tracing::info!(
+            "Starting block watcher (interval={}s)...",
+            self.block_poll_interval_secs
+        );
         
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(12));
+        let mut interval =
+            tokio::time::interval(tokio::time::Duration::from_secs(self.block_poll_interval_secs));
         let mut last_block = self.get_block_number().await?;
         
         loop {
@@ -101,7 +116,11 @@ impl AaveProvider {
         aave_pool_address: H160,
         tx: mpsc::Sender<crate::events::event::Event>,
     ) -> Result<()> {
-        tracing::info!("Starting Aave event watcher for pool: {:?}", aave_pool_address);
+        tracing::info!(
+            "Starting Aave event watcher for pool: {:?} (interval={}s)",
+            aave_pool_address,
+            self.event_poll_interval_secs
+        );
 
         // Aave V3 Event Signatures
         // Borrow(address indexed reserve, address user, address indexed onBehalfOf, uint256 amount, uint256 borrowRate, uint16 indexed referralCode)
@@ -117,7 +136,8 @@ impl AaveProvider {
         let liquidation_signature = "LiquidationCall(address,address,address,uint256,uint256,address,bool)";
 
         let mut last_block = self.get_block_number().await?.as_u64();
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(3));
+        let mut interval =
+            tokio::time::interval(tokio::time::Duration::from_secs(self.event_poll_interval_secs));
 
         loop {
             interval.tick().await;
@@ -192,27 +212,64 @@ impl AaveProvider {
 
         tracing::info!("📢 Detected {} event at block {:?}", event_name, log.block_number);
 
-        // Extract user address từ topics (thường là indexed parameter)
-        // Topics[1] thường là reserve/asset, Topics[2] là user
-        if log.topics.len() > 2 {
-            let user_address = format!("{:?}", H160::from(log.topics[2]));
-            
-            // Emit event để RiskEngine kiểm tra health factor
-            // TODO: Parse asset ID từ log.topics[1]
-            let affected_assets = vec!["ETH".to_string(), "USDC".to_string()]; // Simplified
-            
-            if let Err(e) = tx.send(crate::events::event::Event::MempoolTx {
-                user_id: user_address,
-                affected_assets,
-            }).await {
+        if let Some(user_address) = extract_user_from_topics(event_sig, &log.topics) {
+            let affected_assets = self.extract_affected_assets(event_sig, &log.topics);
+
+            if affected_assets.is_empty() {
+                tracing::debug!(
+                    "No reserve->asset mapping found for {} event at block {:?}",
+                    event_name,
+                    log.block_number
+                );
+            }
+
+            if let Err(e) = tx
+                .send(crate::events::event::Event::MempoolTx {
+                    user_id: user_address,
+                    affected_assets,
+                })
+                .await
+            {
                 tracing::error!("Failed to send event: {:?}", e);
             }
         }
     }
 
+    fn extract_affected_assets(&self, event_sig: H256, topics: &[H256]) -> Vec<String> {
+        if topics.len() < 2 {
+            return Vec::new();
+        }
+
+        let liquidation_sig =
+            H256::from(ethers::utils::keccak256("LiquidationCall(address,address,address,uint256,uint256,address,bool)".as_bytes()));
+
+        if event_sig == liquidation_sig {
+            let mut assets = Vec::new();
+            if let Some(asset) = self.lookup_asset_from_topic(topics.get(1)) {
+                assets.push(asset);
+            }
+            if let Some(asset) = self.lookup_asset_from_topic(topics.get(2)) {
+                if !assets.iter().any(|a| a == &asset) {
+                    assets.push(asset);
+                }
+            }
+            return assets;
+        }
+
+        self.lookup_asset_from_topic(topics.get(1))
+            .map(|asset| vec![asset])
+            .unwrap_or_default()
+    }
+
+    fn lookup_asset_from_topic(&self, topic: Option<&H256>) -> Option<String> {
+        topic
+            .map(|t| H160::from_slice(&t.as_bytes()[12..]))
+            .and_then(|reserve| self.reserve_asset_map.get(&reserve).cloned())
+    }
+
     /// Watch mempool for pending transactions (requires special RPC support)
     /// Note: Anvil/Hardhat thường không support mempool subscription như mainnet
-    pub async fn watch_mempool(&self, tx: mpsc::Sender<crate::events::event::Event>) -> Result<()> {
+    pub async fn watch_mempool(&self, _tx: mpsc::Sender<crate::events::event::Event>) -> Result<()> {
         tracing::warn!("Mempool watching is not fully supported on local forks");
         tracing::info!("For mempool detection, consider using:");
         tracing::info!("  - Flashbots RPC on mainnet");
@@ -223,6 +280,69 @@ impl AaveProvider {
         
         Ok(())
     }
+}
+
+fn env_u64(key: &str, default: u64) -> u64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(default)
+}
+
+fn extract_user_from_topics(event_sig: H256, topics: &[H256]) -> Option<String> {
+    let liquidation_sig =
+        H256::from(ethers::utils::keccak256("LiquidationCall(address,address,address,uint256,uint256,address,bool)".as_bytes()));
+
+    let user_topic = if event_sig == liquidation_sig {
+        topics.get(3)
+    } else {
+        topics.get(2)
+    };
+
+    user_topic.map(|t| format!("{:?}", H160::from_slice(&t.as_bytes()[12..])))
+}
+
+fn load_reserve_asset_map() -> HashMap<H160, String> {
+    let mut map = default_reserve_asset_map();
+
+    if let Ok(raw) = std::env::var("AAVE_RESERVE_ASSET_MAP") {
+        for entry in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            let mut parts = entry.splitn(2, '=').map(str::trim);
+            let left = parts.next();
+            let right = parts.next();
+            let (Some(addr_raw), Some(asset)) = (left, right) else {
+                continue;
+            };
+
+            if let Ok(addr) = addr_raw.parse::<H160>() {
+                map.insert(addr, asset.to_string());
+            }
+        }
+    }
+
+    map
+}
+
+fn default_reserve_asset_map() -> HashMap<H160, String> {
+    let mut map = HashMap::new();
+
+    let defaults = [
+        ("0xC02aaA39b223FE8D0A0E5C4F27eAD9083C756Cc2", "WETH"),
+        ("0xA0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "USDC"),
+        ("0xdAC17F958D2ee523a2206206994597C13D831ec7", "USDT"),
+        ("0x6B175474E89094C44Da98b954EedeAC495271d0F", "DAI"),
+        ("0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599", "WBTC"),
+        ("0x514910771AF9Ca656af840dff83E8264EcF986CA", "LINK"),
+        ("0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DdAE9", "AAVE"),
+    ];
+
+    for (addr_raw, asset) in defaults {
+        if let Ok(addr) = addr_raw.parse::<H160>() {
+            map.insert(addr, asset.to_string());
+        }
+    }
+
+    map
 }
 
 #[cfg(test)]

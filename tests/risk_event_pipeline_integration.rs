@@ -55,6 +55,7 @@ async fn test_mempool_then_block_updates_storage_pipeline() {
         Arc::clone(&storage),
         RiskEngineConfig {
             mempool_speculative_hf_penalty: 0.05,
+            ..Default::default()
         },
     );
 

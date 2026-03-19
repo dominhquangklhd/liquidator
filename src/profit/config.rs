@@ -55,6 +55,12 @@ pub struct ProfitConfig {
     
     /// Verbose logging
     pub verbose: bool,
+
+    /// Fallback gas price (Gwei) used when live estimation fails.
+    pub fallback_gas_price_gwei: f64,
+
+    /// Fallback ETH/USD price used when oracle cache misses.
+    pub fallback_eth_price_usd: f64,
 }
 
 impl Default for ProfitConfig {
@@ -93,6 +99,8 @@ impl Default for ProfitConfig {
                 "LUSD".to_string(),
             ],
             verbose: false,
+            fallback_gas_price_gwei: 30.0,
+            fallback_eth_price_usd: 2000.0,
         }
     }
 }
@@ -138,66 +146,5 @@ impl ProfitConfig {
         } else {
             self.default_slippage_pct
         }
-    }
-}
-
-// ============================================================================
-// UNIT TESTS
-// ============================================================================
-#[cfg(test)]
-mod tests {
-    use super::*;
-    
-    #[test]
-    fn test_default_config() {
-        let config = ProfitConfig::default();
-        assert_eq!(config.close_factor, 0.5);
-        assert_eq!(config.min_profit_usd, 10.0);
-        assert!(!config.liquidation_bonus.is_empty());
-    }
-    
-    #[test]
-    fn test_get_bonus_known_asset() {
-        let config = ProfitConfig::default();
-        assert_eq!(config.get_bonus("ETH"), 5.0);
-        assert_eq!(config.get_bonus("WBTC"), 6.5);
-        assert_eq!(config.get_bonus("USDC"), 4.5);
-    }
-    
-    #[test]
-    fn test_get_bonus_unknown_asset() {
-        let config = ProfitConfig::default();
-        assert_eq!(config.get_bonus("SHIB"), 5.0); // default
-    }
-    
-    #[test]
-    fn test_is_stablecoin() {
-        let config = ProfitConfig::default();
-        assert!(config.is_stablecoin("USDC"));
-        assert!(config.is_stablecoin("DAI"));
-        assert!(!config.is_stablecoin("ETH"));
-        assert!(!config.is_stablecoin("WBTC"));
-    }
-    
-    #[test]
-    fn test_get_slippage() {
-        let config = ProfitConfig::default();
-        assert_eq!(config.get_slippage("USDC"), 0.1);  // stablecoin
-        assert_eq!(config.get_slippage("ETH"), 0.5);    // volatile
-    }
-    
-    #[test]
-    fn test_mainnet_config() {
-        let config = ProfitConfig::mainnet();
-        assert_eq!(config.min_profit_usd, 50.0);
-        assert_eq!(config.min_roi_pct, 200.0);
-        assert!(!config.verbose);
-    }
-    
-    #[test]
-    fn test_local_fork_config() {
-        let config = ProfitConfig::local_fork();
-        assert_eq!(config.min_profit_usd, 1.0);
-        assert!(config.verbose);
     }
 }

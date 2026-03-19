@@ -309,7 +309,11 @@ impl ProfitCalculator {
             .await
             .unwrap_or_else(|_| {
                 // Fallback: estimate dựa trên giá mặc định
-                GasCostEstimate::calculate(30.0, self.config.gas_limit, eth_price)
+                GasCostEstimate::calculate(
+                    self.config.fallback_gas_price_gwei,
+                    self.config.gas_limit,
+                    eth_price,
+                )
             });
         
         // ── 5. Slippage ──
@@ -405,7 +409,7 @@ impl ProfitCalculator {
         let cache = self.price_cache.read().await;
         cache.get("ETH")
             .map(|p| p.price_usd)
-            .unwrap_or(2000.0) // Fallback estimate
+            .unwrap_or(self.config.fallback_eth_price_usd) // Fallback estimate
     }
     
     // ========================================================================

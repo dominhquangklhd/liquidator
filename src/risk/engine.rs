@@ -15,12 +15,30 @@ use crate::storage::{HybridStorage, LiquidationTarget};
 pub struct RiskEngineConfig {
     /// Temporary HF penalty applied on mempool events before block confirmation.
     pub mempool_speculative_hf_penalty: f64,
+
+    /// Reference ETH/USD used to convert asset amounts (priced in ETH) into USD.
+    pub reference_eth_price_usd: f64,
+
+    /// Default liquidation threshold stored with synthesized targets.
+    pub default_liquidation_threshold: f64,
+
+    /// Risk score parameters.
+    pub risk_score_hf_baseline: f64,
+    pub risk_score_hf_span: f64,
+    pub risk_score_min: f64,
+    pub risk_score_max: f64,
 }
 
 impl Default for RiskEngineConfig {
     fn default() -> Self {
         Self {
             mempool_speculative_hf_penalty: 0.03,
+            reference_eth_price_usd: 2000.0,
+            default_liquidation_threshold: 0.85,
+            risk_score_hf_baseline: 1.5,
+            risk_score_hf_span: 0.5,
+            risk_score_min: 1.0,
+            risk_score_max: 10.0,
         }
     }
 }
@@ -196,12 +214,16 @@ impl RiskEngine {
                 if new_hf < tracking_threshold || old_hf < tracking_threshold {
                     let total_collateral_usd: f64 = user.collateral.iter()
                         .filter_map(|(aid, amount)| {
-                            asset_snapshot.get(aid).map(|a| amount * a.price_in_eth * 2000.0)
+                            asset_snapshot
+                                .get(aid)
+                                .map(|a| amount * a.price_in_eth * self.config.reference_eth_price_usd)
                         })
                         .sum();
                     let total_debt_usd: f64 = user.debt.iter()
                         .filter_map(|(aid, amount)| {
-                            asset_snapshot.get(aid).map(|a| amount * a.price_in_eth * 2000.0)
+                            asset_snapshot
+                                .get(aid)
+                                .map(|a| amount * a.price_in_eth * self.config.reference_eth_price_usd)
                         })
                         .sum();
                     let ltv = if total_collateral_usd > 0.0 {
@@ -209,7 +231,11 @@ impl RiskEngine {
                     } else {
                         0.0
                     };
-                    let risk_score = ((1.5 - new_hf) / 0.5 * 10.0).clamp(1.0, 10.0) as u8;
+                    let hf_span = self.config.risk_score_hf_span.max(f64::EPSILON);
+                    let risk_score = ((self.config.risk_score_hf_baseline - new_hf) / hf_span
+                        * self.config.risk_score_max)
+                        .clamp(self.config.risk_score_min, self.config.risk_score_max)
+                        as u8;
 
                     targets_to_update.push(LiquidationTarget {
                         user_address: user.id.clone(),
@@ -217,7 +243,7 @@ impl RiskEngine {
                         total_collateral_usd,
                         total_debt_usd,
                         ltv,
-                        liquidation_threshold: 0.85,
+                        liquidation_threshold: self.config.default_liquidation_threshold,
                         collateral: user.collateral.clone(),
                         debt: user.debt.clone(),
                         estimated_profit: 0.0,
