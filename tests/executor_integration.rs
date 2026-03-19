@@ -676,7 +676,14 @@ async fn test_executor_worker_loop() {
     let storage_clone = Arc::clone(&storage);
     
     let worker_handle = tokio::spawn(async move {
-        liquidator::executor::executor_worker(executor_clone, storage_clone, worker_config, None).await;
+        liquidator::executor::executor_worker(
+            executor_clone,
+            storage_clone,
+            worker_config,
+            None,
+            None,
+        )
+        .await;
     });
     
     // Đợi 1 giây rồi cancel

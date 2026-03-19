@@ -1979,6 +1979,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "dashmap",
+ "dotenvy",
  "ethers",
  "futures",
  "ordered-float",

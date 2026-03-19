@@ -11,7 +11,7 @@
 *.sqlite
 *.db
 
-.env
+.env*
 
 # Ignore build artifacts and temporary files
 /cache

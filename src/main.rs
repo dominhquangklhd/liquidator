@@ -42,6 +42,9 @@ use crate::executor::worker::{executor_worker, stats_worker, nonce_sync_worker};
 /// - Vị thế có HF < 1.0 sẽ được đánh dấu để thanh lý
 #[tokio::main]
 async fn main() {
+    // Load .env if present so local runs can use file-based env vars.
+    let _ = dotenvy::dotenv();
+
     // ============================================================================
     // PHASE 0: SYSTEM INITIALIZATION
     // ============================================================================
@@ -251,7 +254,7 @@ async fn main() {
                 tracing::warn!(
                     "PRIVATE_KEY not set — using Anvil default account (local testing only)"
                 );
-                "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed35a24fd173c1cdd3d3".to_string()
+                "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80".to_string()
             });
 
             let mut executor_config = ExecutorConfig::testnet(aave_pool_address);
