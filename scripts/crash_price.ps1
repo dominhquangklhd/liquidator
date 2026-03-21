@@ -300,6 +300,14 @@ $newPriceHex = "0x" + ([Convert]::ToString([long]$newPrice, 16)).PadLeft(64, '0'
 
 Write-Host "  [>] Setting storage slots on $WETH_PRICE_SOURCE..." -ForegroundColor Gray
 
+# MockPriceFeed storage layout (Solidity):
+# slot 0: _answer (int256)
+# slot 1: _decimals (uint8)
+# slot 2: _description (string) 
+# slot 3: _version (uint256)
+# slot 4: _roundId (uint80)
+# slot 5: _updatedAt (uint256) ← IMPORTANT: Oracle checks if stale!
+
 # Set slot 0: _answer = newPrice
 Invoke-Cast "rpc anvil_setStorageAt $WETH_PRICE_SOURCE `"0x0000000000000000000000000000000000000000000000000000000000000000`" $newPriceHex"
 Write-Host "  [OK] Slot 0 (_answer): $newPrice" -ForegroundColor Green
@@ -308,9 +316,27 @@ Write-Host "  [OK] Slot 0 (_answer): $newPrice" -ForegroundColor Green
 Invoke-Cast "rpc anvil_setStorageAt $WETH_PRICE_SOURCE `"0x0000000000000000000000000000000000000000000000000000000000000001`" `"0x0000000000000000000000000000000000000000000000000000000000000008`""
 Write-Host "  [OK] Slot 1 (_decimals): 8" -ForegroundColor Green
 
-# Set slot 2: _roundId = 1
-Invoke-Cast "rpc anvil_setStorageAt $WETH_PRICE_SOURCE `"0x0000000000000000000000000000000000000000000000000000000000000002`" `"0x0000000000000000000000000000000000000000000000000000000000000001`""
-Write-Host "  [OK] Slot 2 (_roundId): 1" -ForegroundColor Green
+# Set slot 4: _roundId = 1 (increment)
+Invoke-Cast "rpc anvil_setStorageAt $WETH_PRICE_SOURCE `"0x0000000000000000000000000000000000000000000000000000000000000004`" `"0x0000000000000000000000000000000000000000000000000000000000000001`""
+Write-Host "  [OK] Slot 4 (_roundId): 1" -ForegroundColor Green
+
+# Set slot 5: _updatedAt = block.timestamp (current) so Oracle doesn't mark it STALE
+# Get current block via RPC
+$blockNum = Invoke-Expression "cast block-number --rpc-url $RpcUrl" 2>&1
+$blockData = Invoke-Expression "cast block $blockNum --json --rpc-url $RpcUrl" 2>&1 | ConvertFrom-Json
+$currentTimestamp = [Convert]::ToInt64($blockData.timestamp, 16)
+$timestampHex = "0x" + $currentTimestamp.ToString("X")
+
+Invoke-Cast "rpc anvil_setStorageAt $WETH_PRICE_SOURCE `"0x0000000000000000000000000000000000000000000000000000000000000005`" $timestampHex"
+Write-Host "  [OK] Slot 5 (_updatedAt): $currentTimestamp (block timestamp)" -ForegroundColor Green
+
+# ============================================================================
+# STEP 4.5: MINE NEW BLOCK (ensure state is reflected on RPC)
+# ============================================================================
+Write-Host ""
+Write-Host "  [>] Mining new block to ensure price change is reflected..." -ForegroundColor Gray
+Invoke-Cast "rpc anvil_mine 1"
+Write-Host "  [OK] Block mined" -ForegroundColor Green
 
 # ============================================================================
 # STEP 5: Verify crash va HF < 1.0
@@ -363,6 +389,24 @@ if ($acctValues.Count -ge 6) {
             Write-Host "      Thu tang PriceDrop: -PriceDrop 40" -ForegroundColor Yellow
         }
     }
+}
+
+# ============================================================================
+# STEP 5.5: TRIGGER AAVE EVENT TO SEED USER INTO SYSTEM (IMPORTANT!)
+# ============================================================================
+Write-Host ""
+Write-Host "  [>] Triggering Aave event to notify liquidator of risky user..." -ForegroundColor Gray
+Write-Host "     (System needs Aave events to discover users to monitor)" -ForegroundColor Gray
+
+# Do a tiny repay (1 wei DAI) to trigger Repay event on Aave pool
+# This seeds the borrower into Risk Engine's user registry
+try {
+    Invoke-Cast "send $DAI `"approve(address,uint256)`" $AAVE_POOL 1 --private-key $DEPLOYER_KEY"
+    $txHash = Invoke-Cast "send $AAVE_POOL `"repay(address,uint256,uint256,address)`" $DAI 1 2 $BORROWER --private-key $DEPLOYER_KEY"
+    Write-Host "  [OK] Repay event emitted (tx: $($txHash.Substring(0, 10))...)" -ForegroundColor Green
+    Start-Sleep -Seconds 1
+} catch {
+    Write-Host "  [!] Repay trigger failed (non-critical): $_" -ForegroundColor Yellow
 }
 
 # ============================================================================

@@ -264,12 +264,11 @@ impl OracleManager {
                     );
                     true
                 } else {
-                    if self.config.verbose_logging {
-                        tracing::trace!(
-                            "{} = ${:.2} (deviation: {:.4}%, threshold: {:.2}%)",
-                            asset_id, price_data.price_usd, deviation, deviation_threshold
-                        );
-                    }
+                    // Log all polled prices for debugging (to see if RPC reflects state changes)
+                    tracing::debug!(
+                        "[ORACLE] {} = ${:.2} (deviation: {:.4}% < threshold {:.2}%, no event)",
+                        asset_id, price_data.price_usd, deviation, deviation_threshold
+                    );
                     false
                 }
             }

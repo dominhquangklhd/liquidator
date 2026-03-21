@@ -9,6 +9,7 @@ use crate::profit::ProfitCalculator;
 use crate::strategy::{ExecutionMethod, StrategyDecider};
 
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::time::{interval, Duration};
 
 #[derive(Debug, Clone)]
@@ -63,6 +64,7 @@ pub async fn executor_worker(
     strategy_decider: Option<Arc<StrategyDecider>>,
 ) {
     let mut ticker = interval(Duration::from_millis(config.check_interval_ms));
+    let mut last_skip_reason_log = Instant::now() - Duration::from_secs(10);
     
     tracing::info!(
         "Executor worker started (interval: {}ms, batch: {}, threshold: {}, strategy: {})",
@@ -144,7 +146,29 @@ pub async fn executor_worker(
                 match decider.create_plan(pairs).await {
                     Ok(plan) => {
                         if plan.execute_count == 0 {
-                            tracing::debug!("Strategy plan skipped all targets");
+                            if last_skip_reason_log.elapsed() >= Duration::from_secs(5) {
+                                tracing::info!("Strategy plan skipped all targets");
+                                for pt in plan.targets.iter().take(3) {
+                                    let method_reason = match &pt.decision.method {
+                                        ExecutionMethod::Skip { reason } => reason.as_str(),
+                                        _ => "n/a",
+                                    };
+                                    let profit_reason = pt
+                                        .estimate
+                                        .reject_reason
+                                        .as_deref()
+                                        .unwrap_or("n/a");
+                                    tracing::info!(
+                                        "Skip detail user={} method_reason={} profit_reason={} net_profit=${:.4} debt_cover=${:.4}",
+                                        pt.target.user_address,
+                                        method_reason,
+                                        profit_reason,
+                                        pt.estimate.net_profit_usd,
+                                        pt.estimate.debt_to_cover_usd,
+                                    );
+                                }
+                                last_skip_reason_log = Instant::now();
+                            }
                             continue;
                         }
 
