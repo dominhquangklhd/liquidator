@@ -8,6 +8,7 @@ mod profit;
 mod provider;
 mod storage;
 mod strategy;
+mod bootstrap;
 
 use tokio::sync::mpsc;
 use std::sync::Arc;
@@ -23,6 +24,7 @@ use crate::storage::HybridStorage;
 use crate::storage::sync::{stats_logger_worker, memory_monitor_worker};
 use crate::executor::{LiquidationExecutor, ExecutorConfig, WorkerConfig};
 use crate::executor::worker::{executor_worker, stats_worker, nonce_sync_worker};
+use crate::bootstrap::onchain::bootstrap_onchain_state;
 
 /// # Liquidator System - Main Entry Point
 /// 
@@ -134,19 +136,49 @@ async fn main() {
     // PHASE 3: INITIALIZE RISK ENGINE
     // ============================================================================
     
+    let risk_config = RiskEngineConfig {
+        mempool_speculative_hf_penalty: env_f64("MEMPOOL_SPECULATIVE_HF_PENALTY", 0.03),
+        reference_eth_price_usd: env_f64("REFERENCE_ETH_PRICE_USD", 2000.0),
+        default_liquidation_threshold: env_f64("DEFAULT_LIQUIDATION_THRESHOLD", 0.85),
+        risk_score_hf_baseline: env_f64("RISK_SCORE_HF_BASELINE", 1.5),
+        risk_score_hf_span: env_f64("RISK_SCORE_HF_SPAN", 0.5),
+        risk_score_min: env_f64("RISK_SCORE_MIN", 1.0),
+        risk_score_max: env_f64("RISK_SCORE_MAX", 10.0),
+    };
+
     let mut engine = RiskEngine::with_config(
         rx,
         Arc::clone(&storage),
-        RiskEngineConfig {
-            mempool_speculative_hf_penalty: env_f64("MEMPOOL_SPECULATIVE_HF_PENALTY", 0.03),
-            reference_eth_price_usd: env_f64("REFERENCE_ETH_PRICE_USD", 2000.0),
-            default_liquidation_threshold: env_f64("DEFAULT_LIQUIDATION_THRESHOLD", 0.85),
-            risk_score_hf_baseline: env_f64("RISK_SCORE_HF_BASELINE", 1.5),
-            risk_score_hf_span: env_f64("RISK_SCORE_HF_SPAN", 0.5),
-            risk_score_min: env_f64("RISK_SCORE_MIN", 1.0),
-            risk_score_max: env_f64("RISK_SCORE_MAX", 10.0),
-        },
+        risk_config.clone(),
     );
+
+    let aave_pool_address = env_string(
+        "AAVE_POOL_ADDRESS",
+        "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2",
+    )
+    .parse()
+    .expect("Invalid Aave pool address");
+
+    let aave_oracle_address = env_string(
+        "AAVE_ORACLE_ADDRESS",
+        "0x54586bE62E3c3580375aE3723C145253060Ca0C2",
+    )
+    .parse()
+    .expect("Invalid Aave oracle address");
+
+    if let Err(e) = bootstrap_onchain_state(
+        &mut engine,
+        Arc::clone(&storage),
+        provider.provider(),
+        provider.chain_id(),
+        aave_pool_address,
+        aave_oracle_address,
+        &risk_config,
+    )
+    .await
+    {
+        tracing::warn!("On-chain bootstrap failed: {:?}", e);
+    }
 
     // ============================================================================
     // PHASE 5: SPAWN BACKGROUND WORKERS
@@ -175,13 +207,6 @@ async fn main() {
     // - Repay (trả nợ)
     // - Withdraw (rút collateral)
     // - Liquidation (thanh lý)
-    let aave_pool_address = env_string(
-        "AAVE_POOL_ADDRESS",
-        "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2",
-    )
-    .parse()
-    .expect("Invalid Aave pool address");
-    
     let provider_for_events = Arc::clone(&provider);
     let tx_for_events = tx.clone();
     tokio::spawn(async move {

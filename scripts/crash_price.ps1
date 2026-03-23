@@ -53,6 +53,7 @@ $SEPOLIA_CONFIG = @{
 
 # Anvil accounts (Account #2 = Borrower, Account #0 = Deployer for gas)
 $BORROWER      = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
+$BORROWER_KEY  = "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a"
 $DEPLOYER      = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 $DEPLOYER_KEY  = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 
@@ -281,6 +282,12 @@ if (Test-Path $mockJsonPath) {
     Write-Host "  [>] Replacing $WETH_PRICE_SOURCE code with MockPriceFeed..." -ForegroundColor Gray
     Invoke-Cast "rpc anvil_setCode $WETH_PRICE_SOURCE $deployedBytecode"
     Write-Host "  [OK] Contract code replaced" -ForegroundColor Green
+
+    if ($ETH_USD_FEED -ne $WETH_PRICE_SOURCE) {
+        Write-Host "  [>] Replacing $ETH_USD_FEED code with MockPriceFeed (for bot oracle worker)..." -ForegroundColor Gray
+        Invoke-Cast "rpc anvil_setCode $ETH_USD_FEED $deployedBytecode"
+        Write-Host "  [OK] ETH/USD feed code replaced" -ForegroundColor Green
+    }
 } else {
     Write-Host "  [X] Khong tim thay MockPriceFeed bytecode!" -ForegroundColor Red
     exit 1
@@ -298,7 +305,10 @@ Write-Step "4/5" "Set Crashed Price truc tiep"
 
 $newPriceHex = "0x" + ([Convert]::ToString([long]$newPrice, 16)).PadLeft(64, '0')
 
-Write-Host "  [>] Setting storage slots on $WETH_PRICE_SOURCE..." -ForegroundColor Gray
+$targetFeeds = @($WETH_PRICE_SOURCE)
+if ($ETH_USD_FEED -ne $WETH_PRICE_SOURCE) {
+    $targetFeeds += $ETH_USD_FEED
+}
 
 # MockPriceFeed storage layout (Solidity):
 # slot 0: _answer (int256)
@@ -308,18 +318,6 @@ Write-Host "  [>] Setting storage slots on $WETH_PRICE_SOURCE..." -ForegroundCol
 # slot 4: _roundId (uint80)
 # slot 5: _updatedAt (uint256) ← IMPORTANT: Oracle checks if stale!
 
-# Set slot 0: _answer = newPrice
-Invoke-Cast "rpc anvil_setStorageAt $WETH_PRICE_SOURCE `"0x0000000000000000000000000000000000000000000000000000000000000000`" $newPriceHex"
-Write-Host "  [OK] Slot 0 (_answer): $newPrice" -ForegroundColor Green
-
-# Set slot 1: _decimals = 8
-Invoke-Cast "rpc anvil_setStorageAt $WETH_PRICE_SOURCE `"0x0000000000000000000000000000000000000000000000000000000000000001`" `"0x0000000000000000000000000000000000000000000000000000000000000008`""
-Write-Host "  [OK] Slot 1 (_decimals): 8" -ForegroundColor Green
-
-# Set slot 4: _roundId = 1 (increment)
-Invoke-Cast "rpc anvil_setStorageAt $WETH_PRICE_SOURCE `"0x0000000000000000000000000000000000000000000000000000000000000004`" `"0x0000000000000000000000000000000000000000000000000000000000000001`""
-Write-Host "  [OK] Slot 4 (_roundId): 1" -ForegroundColor Green
-
 # Set slot 5: _updatedAt = block.timestamp (current) so Oracle doesn't mark it STALE
 # Get current block via RPC
 $blockNum = Invoke-Expression "cast block-number --rpc-url $RpcUrl" 2>&1
@@ -327,8 +325,25 @@ $blockData = Invoke-Expression "cast block $blockNum --json --rpc-url $RpcUrl" 2
 $currentTimestamp = [Convert]::ToInt64($blockData.timestamp, 16)
 $timestampHex = "0x" + $currentTimestamp.ToString("X")
 
-Invoke-Cast "rpc anvil_setStorageAt $WETH_PRICE_SOURCE `"0x0000000000000000000000000000000000000000000000000000000000000005`" $timestampHex"
-Write-Host "  [OK] Slot 5 (_updatedAt): $currentTimestamp (block timestamp)" -ForegroundColor Green
+foreach ($feed in $targetFeeds) {
+    Write-Host "  [>] Setting storage slots on $feed..." -ForegroundColor Gray
+
+    # Set slot 0: _answer = newPrice
+    Invoke-Cast "rpc anvil_setStorageAt $feed `"0x0000000000000000000000000000000000000000000000000000000000000000`" $newPriceHex"
+    Write-Host "  [OK] Slot 0 (_answer): $newPrice" -ForegroundColor Green
+
+    # Set slot 1: _decimals = 8
+    Invoke-Cast "rpc anvil_setStorageAt $feed `"0x0000000000000000000000000000000000000000000000000000000000000001`" `"0x0000000000000000000000000000000000000000000000000000000000000008`""
+    Write-Host "  [OK] Slot 1 (_decimals): 8" -ForegroundColor Green
+
+    # Set slot 4: _roundId = 1 (increment)
+    Invoke-Cast "rpc anvil_setStorageAt $feed `"0x0000000000000000000000000000000000000000000000000000000000000004`" `"0x0000000000000000000000000000000000000000000000000000000000000001`""
+    Write-Host "  [OK] Slot 4 (_roundId): 1" -ForegroundColor Green
+
+    # Set slot 5: _updatedAt = current block timestamp
+    Invoke-Cast "rpc anvil_setStorageAt $feed `"0x0000000000000000000000000000000000000000000000000000000000000005`" $timestampHex"
+    Write-Host "  [OK] Slot 5 (_updatedAt): $currentTimestamp (block timestamp)" -ForegroundColor Green
+}
 
 # ============================================================================
 # STEP 4.5: MINE NEW BLOCK (ensure state is reflected on RPC)
@@ -360,6 +375,14 @@ if ($null -ne $newEthPriceActual -and $newEthPriceActual -gt 0) {
     }
 } else {
     Write-Host "  [X] Khong doc duoc gia moi" -ForegroundColor Red
+}
+
+# Also verify ETH/USD feed used by Oracle worker
+$workerEthPriceRaw = Invoke-Cast "call $ETH_USD_FEED `"latestAnswer()(int256)`""
+$workerEthPrice = Parse-HexOrDecimal $workerEthPriceRaw
+if ($null -ne $workerEthPrice -and $workerEthPrice -gt 0) {
+    $workerEthPriceUsd = [math]::Round($workerEthPrice / 1e8, 2)
+    Write-Host "  [i] ETH/USD feed for bot worker: `$$workerEthPriceUsd" -ForegroundColor Cyan
 }
 
 # Check new HF
@@ -398,15 +421,24 @@ Write-Host ""
 Write-Host "  [>] Triggering Aave event to notify liquidator of risky user..." -ForegroundColor Gray
 Write-Host "     (System needs Aave events to discover users to monitor)" -ForegroundColor Gray
 
-# Do a tiny repay (1 wei DAI) to trigger Repay event on Aave pool
-# This seeds the borrower into Risk Engine's user registry
+# Do a tiny supply (0.001 ETH -> WETH) to trigger Supply event on Aave pool.
+# This is more reliable than repay because borrower may not hold debt asset balance.
 try {
-    Invoke-Cast "send $DAI `"approve(address,uint256)`" $AAVE_POOL 1 --private-key $DEPLOYER_KEY"
-    $txHash = Invoke-Cast "send $AAVE_POOL `"repay(address,uint256,uint256,address)`" $DAI 1 2 $BORROWER --private-key $DEPLOYER_KEY"
-    Write-Host "  [OK] Repay event emitted (tx: $($txHash.Substring(0, 10))...)" -ForegroundColor Green
+    $seedAmountWei = "1000000000000000" # 0.001 WETH
+
+    $null = Invoke-Cast "send $WETH `"deposit()`" --value 0.001ether --private-key $BORROWER_KEY"
+    $null = Invoke-Cast "send $WETH `"approve(address,uint256)`" $AAVE_POOL $seedAmountWei --private-key $BORROWER_KEY"
+    $txOutput = Invoke-Cast "send $AAVE_POOL `"supply(address,uint256,address,uint16)`" $WETH $seedAmountWei $BORROWER 0 --private-key $BORROWER_KEY"
+
+    if ($txOutput -match "0x[a-fA-F0-9]{64}") {
+        $txHash = $Matches[0]
+        Write-Host "  [OK] Supply event emitted (tx: $($txHash.Substring(0, 10))...)" -ForegroundColor Green
+    } else {
+        Write-Host "  [!] Supply tx output khong hop le: $txOutput" -ForegroundColor Yellow
+    }
     Start-Sleep -Seconds 1
 } catch {
-    Write-Host "  [!] Repay trigger failed (non-critical): $_" -ForegroundColor Yellow
+    Write-Host "  [!] Event trigger failed (non-critical): $_" -ForegroundColor Yellow
 }
 
 # ============================================================================

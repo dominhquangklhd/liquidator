@@ -123,6 +123,9 @@ impl AaveProvider {
         );
 
         // Aave V3 Event Signatures
+        // Supply(address indexed reserve, address user, address indexed onBehalfOf, uint256 amount, uint16 indexed referralCode)
+        let supply_signature = "Supply(address,address,address,uint256,uint16)";
+
         // Borrow(address indexed reserve, address user, address indexed onBehalfOf, uint256 amount, uint256 borrowRate, uint16 indexed referralCode)
         let borrow_signature = "Borrow(address,address,address,uint256,uint256,uint16)";
         
@@ -160,6 +163,7 @@ impl AaveProvider {
                 .from_block(last_block + 1)
                 .to_block(current_block)
                 .topic0(vec![
+                    ethers::utils::keccak256(supply_signature.as_bytes()),
                     ethers::utils::keccak256(borrow_signature.as_bytes()),
                     ethers::utils::keccak256(withdraw_signature.as_bytes()),
                     ethers::utils::keccak256(repay_signature.as_bytes()),
@@ -193,12 +197,15 @@ impl AaveProvider {
         let event_sig = log.topics[0];
         
         // So sánh với event signatures
+        let supply_sig = ethers::utils::keccak256("Supply(address,address,address,uint256,uint16)".as_bytes());
         let borrow_sig = ethers::utils::keccak256("Borrow(address,address,address,uint256,uint256,uint16)".as_bytes());
         let withdraw_sig = ethers::utils::keccak256("Withdraw(address,address,address,uint256)".as_bytes());
         let repay_sig = ethers::utils::keccak256("Repay(address,address,address,uint256,bool)".as_bytes());
         let liquidation_sig = ethers::utils::keccak256("LiquidationCall(address,address,address,uint256,uint256,address,bool)".as_bytes());
 
-        let event_name = if event_sig == borrow_sig.into() {
+        let event_name = if event_sig == supply_sig.into() {
+            "Supply"
+        } else if event_sig == borrow_sig.into() {
             "Borrow"
         } else if event_sig == withdraw_sig.into() {
             "Withdraw"

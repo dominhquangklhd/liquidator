@@ -163,7 +163,7 @@ impl OracleConfig {
     /// Tạo config cho Anvil local fork (polling nhanh hơn)
     pub fn local_fork() -> Self {
         let mut config = Self::mainnet();
-        config.poll_interval_ms = 2000;   // Poll nhanh hơn trên local
+        config.poll_interval_ms = 5000;   // Poll nhanh hơn trên local
         config.retry_delay_ms = 500;
         config.verbose_logging = true;
         config

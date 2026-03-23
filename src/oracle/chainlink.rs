@@ -8,7 +8,7 @@
 // - getRoundData(): Đọc giá tại round cụ thể (fallback)
 
 use ethers::providers::{Provider, Http};
-use ethers::types::Address;
+use ethers::types::{Address, I256};
 use ethers::contract::abigen;
 
 use anyhow::{Result, Context, bail};
@@ -47,6 +47,25 @@ pub struct ChainlinkFeed {
 }
 
 impl ChainlinkFeed {
+    fn parse_answer_i128(answer: I256, asset_symbol: &str) -> Result<i128> {
+        answer
+            .to_string()
+            .parse::<i128>()
+            .with_context(|| {
+                format!(
+                    "Price answer for {} is outside i128 range: {}",
+                    asset_symbol, answer
+                )
+            })
+    }
+
+    fn parse_answer_f64(answer: I256, asset_symbol: &str) -> Result<f64> {
+        answer
+            .to_string()
+            .parse::<f64>()
+            .with_context(|| format!("Failed to parse price answer for {}: {}", asset_symbol, answer))
+    }
+
     /// Tạo feed reader mới
     pub fn new(provider: Arc<Provider<Http>>, config: PriceFeedConfig) -> Self {
         let contract = ChainlinkAggregator::new(config.feed_address, provider);
@@ -116,12 +135,14 @@ impl ChainlinkFeed {
         
         // Convert to f64 USD price
         let decimals = self.decimals_cache.unwrap_or(self.config.decimals);
-        let price_usd = answer.as_i128() as f64 / 10_f64.powi(decimals as i32);
+        let answer_raw = Self::parse_answer_i128(answer, &self.config.asset_symbol)?;
+        let price_usd = Self::parse_answer_f64(answer, &self.config.asset_symbol)?
+            / 10_f64.powi(decimals as i32);
         
         Ok(PriceData {
             asset_id: self.config.asset_id.clone(),
             price_usd,
-            price_raw: answer.as_i128(),
+            price_raw: answer_raw,
             decimals,
             round_id: round_id as u128,
             updated_at: updated_at.as_u64(),
@@ -144,7 +165,8 @@ impl ChainlinkFeed {
         }
         
         let decimals = self.decimals_cache.unwrap_or(self.config.decimals);
-        Ok(answer.as_i128() as f64 / 10_f64.powi(decimals as i32))
+        Ok(Self::parse_answer_f64(answer, &self.config.asset_symbol)?
+            / 10_f64.powi(decimals as i32))
     }
     
     /// Đọc giá tại một round cụ thể (dùng cho fallback/verification)
@@ -160,12 +182,14 @@ impl ChainlinkFeed {
         }
         
         let decimals = self.decimals_cache.unwrap_or(self.config.decimals);
-        let price_usd = answer.as_i128() as f64 / 10_f64.powi(decimals as i32);
+        let answer_raw = Self::parse_answer_i128(answer, &self.config.asset_symbol)?;
+        let price_usd = Self::parse_answer_f64(answer, &self.config.asset_symbol)?
+            / 10_f64.powi(decimals as i32);
         
         Ok(PriceData {
             asset_id: self.config.asset_id.clone(),
             price_usd,
-            price_raw: answer.as_i128(),
+            price_raw: answer_raw,
             decimals,
             round_id: rid as u128,
             updated_at: updated_at.as_u64(),
