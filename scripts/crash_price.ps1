@@ -20,7 +20,8 @@ param(
     [string]$RpcUrl = "http://127.0.0.1:8545",
     [ValidateSet("auto", "mainnet", "sepolia")]
     [string]$Network = "auto",
-    [int]$PriceDrop = 25  # % price drop, default 25%
+    [int]$PriceDrop = 25,  # % price drop, default 25%
+    [switch]$SeedAaveEvent  # Optional: emit an extra Aave event after crash
 )
 
 # ============================================================================
@@ -323,7 +324,7 @@ if ($ETH_USD_FEED -ne $WETH_PRICE_SOURCE) {
 $blockNum = Invoke-Expression "cast block-number --rpc-url $RpcUrl" 2>&1
 $blockData = Invoke-Expression "cast block $blockNum --json --rpc-url $RpcUrl" 2>&1 | ConvertFrom-Json
 $currentTimestamp = [Convert]::ToInt64($blockData.timestamp, 16)
-$timestampHex = "0x" + $currentTimestamp.ToString("X")
+$timestampHex = "0x" + $currentTimestamp.ToString("X").PadLeft(64, '0')
 
 foreach ($feed in $targetFeeds) {
     Write-Host "  [>] Setting storage slots on $feed..." -ForegroundColor Gray
@@ -415,30 +416,31 @@ if ($acctValues.Count -ge 6) {
 }
 
 # ============================================================================
-# STEP 5.5: TRIGGER AAVE EVENT TO SEED USER INTO SYSTEM (IMPORTANT!)
+# STEP 5.5: OPTIONAL AAVE EVENT TRIGGER
 # ============================================================================
-Write-Host ""
-Write-Host "  [>] Triggering Aave event to notify liquidator of risky user..." -ForegroundColor Gray
-Write-Host "     (System needs Aave events to discover users to monitor)" -ForegroundColor Gray
+if ($SeedAaveEvent) {
+    Write-Host ""
+    Write-Host "  [>] Triggering optional Aave event..." -ForegroundColor Gray
+    Write-Host "     (Disabled by default to avoid changing borrower HF after crash)" -ForegroundColor Gray
 
-# Do a tiny supply (0.001 ETH -> WETH) to trigger Supply event on Aave pool.
-# This is more reliable than repay because borrower may not hold debt asset balance.
-try {
-    $seedAmountWei = "1000000000000000" # 0.001 WETH
+    # Use a tiny repay event instead of extra supply to avoid artificially increasing collateral.
+    try {
+        $seedRepayAmount = "1000" # 0.001 USDC (6 decimals)
+        $txOutput = Invoke-Cast "send $AAVE_POOL `"repay(address,uint256,uint256,address)`" $USDC $seedRepayAmount 2 $BORROWER --private-key $BORROWER_KEY"
 
-    $null = Invoke-Cast "send $WETH `"deposit()`" --value 0.001ether --private-key $BORROWER_KEY"
-    $null = Invoke-Cast "send $WETH `"approve(address,uint256)`" $AAVE_POOL $seedAmountWei --private-key $BORROWER_KEY"
-    $txOutput = Invoke-Cast "send $AAVE_POOL `"supply(address,uint256,address,uint16)`" $WETH $seedAmountWei $BORROWER 0 --private-key $BORROWER_KEY"
-
-    if ($txOutput -match "0x[a-fA-F0-9]{64}") {
-        $txHash = $Matches[0]
-        Write-Host "  [OK] Supply event emitted (tx: $($txHash.Substring(0, 10))...)" -ForegroundColor Green
-    } else {
-        Write-Host "  [!] Supply tx output khong hop le: $txOutput" -ForegroundColor Yellow
+        if ($txOutput -match "0x[a-fA-F0-9]{64}") {
+            $txHash = $Matches[0]
+            Write-Host "  [OK] Repay event emitted (tx: $($txHash.Substring(0, 10))...)" -ForegroundColor Green
+        } else {
+            Write-Host "  [!] Repay tx output khong hop le: $txOutput" -ForegroundColor Yellow
+        }
+        Start-Sleep -Seconds 1
+    } catch {
+        Write-Host "  [!] Optional event trigger failed (non-critical): $_" -ForegroundColor Yellow
     }
-    Start-Sleep -Seconds 1
-} catch {
-    Write-Host "  [!] Event trigger failed (non-critical): $_" -ForegroundColor Yellow
+} else {
+    Write-Host ""
+    Write-Host "  [i] Skip optional Aave seed event (use -SeedAaveEvent to enable)" -ForegroundColor Gray
 }
 
 # ============================================================================

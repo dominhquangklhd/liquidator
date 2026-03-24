@@ -311,9 +311,61 @@ impl OracleManager {
                     fi.deviation_events += 1;
                 }
             }
+
+            // ETH/USD thay đổi sẽ làm giá ETH-based của mọi asset khác thay đổi,
+            // kể cả khi USD price của chính asset đó không đổi (e.g., USDC/USD ~ 1.0).
+            if asset_id == "ETH" {
+                self.emit_repriced_assets_after_eth_move(price_data.price_usd).await;
+            }
         }
         
         Ok(should_emit)
+    }
+
+    /// Khi ETH/USD biến động, phát thêm updates cho các assets non-ETH
+    /// để RiskEngine recalculation đúng theo price_in_eth mới.
+    async fn emit_repriced_assets_after_eth_move(&self, eth_price_usd: f64) {
+        if eth_price_usd <= 0.0 {
+            return;
+        }
+
+        let cache_snapshot = {
+            let cache = self.price_cache.read().await;
+            cache.iter()
+                .map(|(asset_id, price)| (asset_id.clone(), price.price_usd))
+                .collect::<Vec<_>>()
+        };
+
+        for (other_asset_id, other_price_usd) in cache_snapshot {
+            if other_asset_id == "ETH" || other_asset_id == "WETH" {
+                continue;
+            }
+
+            let repriced_in_eth = other_price_usd / eth_price_usd;
+            if repriced_in_eth <= 0.0 {
+                continue;
+            }
+
+            if let Err(e) = self.event_tx.send(Event::PriceUpdate {
+                asset_id: other_asset_id.clone(),
+                new_price: repriced_in_eth,
+            }).await {
+                tracing::error!(
+                    "Failed to send repriced PriceUpdate event for {}: {:?}",
+                    other_asset_id,
+                    e
+                );
+                continue;
+            }
+
+            let mut stats = self.stats.write().await;
+            stats.total_updates_emitted += 1;
+
+            let mut info = self.feed_info.write().await;
+            if let Some(fi) = info.get_mut(&other_asset_id) {
+                fi.deviation_events += 1;
+            }
+        }
     }
     
     /// Chuyển đổi giá USD sang giá ETH-based cho RiskEngine

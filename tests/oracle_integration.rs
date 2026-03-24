@@ -51,8 +51,9 @@
 
 use std::sync::{Arc, OnceLock};
 use ethers::prelude::*;
+use ethers::abi::Abi;
 use ethers::providers::{Provider, Http, Middleware};
-use ethers::types::{Address, H256, U256};
+use ethers::types::{Address, Bytes, H256, U256};
 use anyhow::{Result, Context};
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -132,6 +133,50 @@ fn load_mock_deployed_bytecode() -> Result<String> {
     } else {
         Ok(format!("0x{}", bytecode))
     }
+}
+
+fn load_mock_creation_bytecode() -> Result<String> {
+    let json_path = std::path::Path::new("out")
+        .join("MockPriceFeed.sol")
+        .join("MockPriceFeed.json");
+
+    let raw = std::fs::read_to_string(&json_path)
+        .with_context(|| format!("Cannot read {}. Run `forge build contracts/MockPriceFeed.sol` first.", json_path.display()))?;
+    let v: Value = serde_json::from_str(&raw)
+        .with_context(|| format!("Invalid JSON in {}", json_path.display()))?;
+
+    let bytecode = v
+        .get("bytecode")
+        .and_then(|x| x.get("object"))
+        .and_then(Value::as_str)
+        .context("Missing bytecode.object in MockPriceFeed artifact")?
+        .trim();
+
+    if bytecode.is_empty() {
+        anyhow::bail!("bytecode.object is empty in MockPriceFeed artifact");
+    }
+
+    if bytecode.starts_with("0x") {
+        Ok(bytecode.to_string())
+    } else {
+        Ok(format!("0x{}", bytecode))
+    }
+}
+
+fn load_mock_abi() -> Result<Abi> {
+    let json_path = std::path::Path::new("out")
+        .join("MockPriceFeed.sol")
+        .join("MockPriceFeed.json");
+
+    let raw = std::fs::read_to_string(&json_path)
+        .with_context(|| format!("Cannot read {}. Run `forge build contracts/MockPriceFeed.sol` first.", json_path.display()))?;
+    let v: Value = serde_json::from_str(&raw)
+        .with_context(|| format!("Invalid JSON in {}", json_path.display()))?;
+
+    let abi_value = v.get("abi").context("Missing abi in MockPriceFeed artifact")?;
+    let abi: Abi = serde_json::from_value(abi_value.clone())
+        .context("Invalid abi in MockPriceFeed artifact")?;
+    Ok(abi)
 }
 
 async fn anvil_set_code(provider: &Provider<Http>, target: Address, bytecode: &str) -> Result<()> {
@@ -671,6 +716,101 @@ async fn test_mock_feed_answerupdated_triggers_oracle_priceupdate() -> Result<()
     // 5) Oracle poll should detect deviation and emit internal Event::PriceUpdate.
     let updates = manager.poll_all().await?;
     assert_eq!(updates, 1, "Expected one feed update after setAnswer");
+
+    let evt = tokio::time::timeout(tokio::time::Duration::from_secs(2), event_rx.recv()).await?;
+    match evt {
+        Some(Event::PriceUpdate { asset_id, new_price }) => {
+            assert_eq!(asset_id, "ETH");
+            assert_eq!(new_price, 1.0, "ETH must remain 1.0 in ETH-based pricing");
+        }
+        Some(other) => panic!("Expected PriceUpdate, got {:?}", other),
+        None => panic!("Event channel closed unexpectedly"),
+    }
+
+    Ok(())
+}
+
+// ============================================================================
+// TEST 11.5: MockPriceFeed at NEW address -> OracleManager still works
+// ============================================================================
+#[tokio::test]
+async fn test_oracle_manager_with_deployed_mock_feed_address() -> Result<()> {
+    let _guard = test_mutex().lock().await;
+    let provider = connect_anvil().await?;
+
+    // Build signer from Anvil default account.
+    let chain_id = provider.get_chainid().await?.as_u64();
+    let wallet: LocalWallet = ANVIL_DEFAULT_KEY.parse::<LocalWallet>()?.with_chain_id(chain_id);
+    let signer = Arc::new(SignerMiddleware::new(provider.as_ref().clone(), wallet));
+
+    // Deploy MockPriceFeed at a fresh address instead of replacing Chainlink feed code.
+    let bytecode_hex = load_mock_creation_bytecode()?;
+    let bytecode: Bytes = bytecode_hex.parse().context("Invalid mock deployed bytecode")?;
+    let abi = load_mock_abi()?;
+    let factory = ContractFactory::new(abi, bytecode, Arc::clone(&signer));
+
+    let initial_price_raw: i64 = 2_500 * 100_000_000; // $2500, 8 decimals
+    let deployed = factory
+        .deploy(I256::from(initial_price_raw))?
+        .send()
+        .await
+        .context("Failed to deploy MockPriceFeed")?;
+    let mock_addr = deployed.address();
+
+    // Point oracle manager to the mock address.
+    let config = OracleConfig {
+        poll_interval_ms: 1000,
+        default_deviation_pct: 0.01,
+        default_staleness_secs: 999999,
+        max_retries: 1,
+        retry_delay_ms: 100,
+        verbose_logging: true,
+        feeds: vec![PriceFeedConfig {
+            asset_symbol: "ETH".to_string(),
+            asset_id: "ETH".to_string(),
+            feed_address: mock_addr,
+            decimals: 8,
+            heartbeat_secs: 999999,
+            deviation_threshold_pct: 0.01,
+            is_stablecoin: false,
+        }],
+    };
+
+    let (event_tx, mut event_rx) = mpsc::channel::<Event>(100);
+    let mut manager = OracleManager::new(config, Arc::clone(&provider), event_tx).await?;
+    manager.initialize().await?;
+
+    let initial_price = manager
+        .get_price_usd("ETH")
+        .await
+        .context("Missing ETH price after initialize")?;
+    assert!(
+        (initial_price - 2500.0).abs() < 0.1,
+        "Expected initial mock ETH price around $2500, got ${}",
+        initial_price
+    );
+
+    // Update mock feed price and poll again.
+    let mock = MockPriceFeedContract::new(mock_addr, Arc::clone(&signer));
+    let new_price_raw: i64 = 1_800 * 100_000_000; // $1800
+    mock.set_answer(I256::from(new_price_raw))
+        .send()
+        .await?
+        .await?
+        .context("setAnswer tx dropped without receipt")?;
+
+    let updates = manager.poll_all().await?;
+    assert_eq!(updates, 1, "Expected one update after mock price change");
+
+    let updated_price = manager
+        .get_price_usd("ETH")
+        .await
+        .context("Missing ETH price after poll")?;
+    assert!(
+        (updated_price - 1800.0).abs() < 0.1,
+        "Expected updated mock ETH price around $1800, got ${}",
+        updated_price
+    );
 
     let evt = tokio::time::timeout(tokio::time::Duration::from_secs(2), event_rx.recv()).await?;
     match evt {
