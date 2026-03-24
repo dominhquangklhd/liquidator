@@ -223,7 +223,8 @@ async fn main() {
     // ============================================================================
     
     // Khởi tạo Oracle module — theo dõi giá realtime từ Chainlink
-    let oracle_config = OracleConfig::local_fork(); // Dùng local_fork() cho Anvil
+    let mut oracle_config = OracleConfig::local_fork(); // Dùng local_fork() cho Anvil
+    oracle_config.apply_env_overrides();
     let tx_for_oracle = tx.clone();
     
     match OracleManager::new(oracle_config.clone(), provider.provider(), tx_for_oracle).await {

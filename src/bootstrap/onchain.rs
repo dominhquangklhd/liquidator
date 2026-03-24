@@ -41,7 +41,7 @@ pub async fn bootstrap_onchain_state(
         return Ok(());
     }
 
-    let reserve_catalog = default_reserve_catalog(chain_id);
+    let reserve_catalog = reserve_catalog_from_env(chain_id);
     let oracle = BootstrapAaveOracle::new(aave_oracle_address, Arc::clone(&rpc));
 
     let eth_reserve = reserve_catalog
@@ -68,9 +68,9 @@ pub async fn bootstrap_onchain_state(
             .call()
             .await
             .map(|v| v.as_u128() as f64 / 1e8)
-            .unwrap_or_else(|_| fallback_price_usd(symbol, eth_price_usd));
+            .unwrap_or_else(|_| fallback_price_usd(symbol.as_str(), eth_price_usd));
 
-        let price_in_eth = if *symbol == "ETH" || *symbol == "WETH" {
+        let price_in_eth = if symbol == "ETH" || symbol == "WETH" {
             1.0
         } else if eth_price_usd > 0.0 {
             price_usd / eth_price_usd
@@ -78,16 +78,16 @@ pub async fn bootstrap_onchain_state(
             price_usd
         };
 
-        let decimals = if *symbol == "USDC" || *symbol == "USDT" {
+        let decimals = if symbol == "USDC" || symbol == "USDT" {
             6
         } else {
             18
         };
         engine.assets.insert(
-            (*symbol).to_string(),
+            symbol.to_string(),
             Asset {
-                id: (*symbol).to_string(),
-                symbol: (*symbol).to_string(),
+                id: symbol.to_string(),
+                symbol: symbol.to_string(),
                 decimals,
                 ltv: 0.80,
                 liquidation_threshold: 0.85,
@@ -232,7 +232,43 @@ fn parse_bootstrap_users() -> Vec<Address> {
     }
 }
 
-fn default_reserve_catalog(chain_id: u64) -> HashMap<&'static str, Address> {
+fn reserve_catalog_from_env(chain_id: u64) -> HashMap<String, Address> {
+    let mut out = default_reserve_catalog(chain_id);
+
+    if let Ok(raw) = std::env::var("RESERVE_CATALOG") {
+        for entry in raw.split(',').map(str::trim).filter(|e| !e.is_empty()) {
+            let Some((symbol_raw, addr_raw)) = entry.split_once('=') else {
+                continue;
+            };
+
+            let symbol = symbol_raw.trim().to_ascii_uppercase();
+            let Ok(addr) = addr_raw.trim().parse::<Address>() else {
+                continue;
+            };
+
+            out.insert(symbol, addr);
+        }
+    }
+
+    for (key, value) in std::env::vars() {
+        if !key.starts_with("RESERVE_") || key == "RESERVE_CATALOG" {
+            continue;
+        }
+
+        let symbol = key.trim_start_matches("RESERVE_").trim().to_ascii_uppercase();
+        if symbol.is_empty() {
+            continue;
+        }
+
+        if let Ok(addr) = value.trim().parse::<Address>() {
+            out.insert(symbol, addr);
+        }
+    }
+
+    out
+}
+
+fn default_reserve_catalog(chain_id: u64) -> HashMap<String, Address> {
     let mut out = HashMap::new();
 
     let pairs: [(&str, &str); 7] = if chain_id == 11155111 {
@@ -259,7 +295,7 @@ fn default_reserve_catalog(chain_id: u64) -> HashMap<&'static str, Address> {
 
     for (symbol, addr_raw) in pairs {
         if let Ok(addr) = addr_raw.parse::<Address>() {
-            out.insert(symbol, addr);
+            out.insert(symbol.to_string(), addr);
         }
     }
 

@@ -8,6 +8,7 @@
 
 use ethers::types::Address;
 use std::collections::HashMap;
+use std::env;
 
 /// Cấu hình cho một price feed cụ thể
 #[derive(Debug, Clone)]
@@ -167,6 +168,74 @@ impl OracleConfig {
         config.retry_delay_ms = 500;
         config.verbose_logging = true;
         config
+    }
+
+    /// Apply environment overrides for runtime configuration.
+    ///
+    /// Supported env vars:
+    /// - ORACLE_POLL_INTERVAL_MS
+    /// - ORACLE_RETRY_DELAY_MS
+    /// - ORACLE_MAX_RETRIES
+    /// - ORACLE_VERBOSE_LOGGING
+    /// - ORACLE_FEEDS: SYMBOL=0xFeedAddr,SYMBOL2=0xFeedAddr2
+    pub fn apply_env_overrides(&mut self) {
+        if let Ok(v) = env::var("ORACLE_POLL_INTERVAL_MS") {
+            if let Ok(parsed) = v.trim().parse::<u64>() {
+                self.poll_interval_ms = parsed;
+            }
+        }
+
+        if let Ok(v) = env::var("ORACLE_RETRY_DELAY_MS") {
+            if let Ok(parsed) = v.trim().parse::<u64>() {
+                self.retry_delay_ms = parsed;
+            }
+        }
+
+        if let Ok(v) = env::var("ORACLE_MAX_RETRIES") {
+            if let Ok(parsed) = v.trim().parse::<u32>() {
+                self.max_retries = parsed;
+            }
+        }
+
+        if let Ok(v) = env::var("ORACLE_VERBOSE_LOGGING") {
+            let normalized = v.trim().to_ascii_lowercase();
+            if matches!(normalized.as_str(), "1" | "true" | "yes" | "on") {
+                self.verbose_logging = true;
+            } else if matches!(normalized.as_str(), "0" | "false" | "no" | "off") {
+                self.verbose_logging = false;
+            }
+        }
+
+        if let Ok(raw_feeds) = env::var("ORACLE_FEEDS") {
+            for entry in raw_feeds.split(',').map(str::trim).filter(|e| !e.is_empty()) {
+                let Some((symbol_raw, addr_raw)) = entry.split_once('=') else {
+                    continue;
+                };
+
+                let symbol = symbol_raw.trim().to_ascii_uppercase();
+                let Ok(feed_address) = addr_raw.trim().parse::<Address>() else {
+                    continue;
+                };
+
+                if let Some(existing) = self
+                    .feeds
+                    .iter_mut()
+                    .find(|f| f.asset_id.eq_ignore_ascii_case(&symbol))
+                {
+                    existing.feed_address = feed_address;
+                } else {
+                    self.feeds.push(PriceFeedConfig {
+                        asset_symbol: symbol.clone(),
+                        asset_id: symbol,
+                        feed_address,
+                        decimals: 8,
+                        heartbeat_secs: self.default_staleness_secs,
+                        deviation_threshold_pct: self.default_deviation_pct,
+                        is_stablecoin: false,
+                    });
+                }
+            }
+        }
     }
 
     /// Thêm custom price feed
