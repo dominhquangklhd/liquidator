@@ -7,6 +7,7 @@ use super::executor::{LiquidationExecutor, LiquidationResult};
 use crate::storage::{HybridStorage, LiquidationTarget, LiquidationEvent};
 use crate::profit::ProfitCalculator;
 use crate::strategy::{ExecutionMethod, StrategyDecider};
+use ethers::types::{Address, U256};
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -40,13 +41,57 @@ pub struct WorkerConfig {
 impl Default for WorkerConfig {
     fn default() -> Self {
         Self {
-            check_interval_ms: 100,        // Check every 100ms
+            check_interval_ms: 500,        // Check every 500ms
             batch_size: 10,                 // Process up to 10 targets
             liquidation_threshold: 1.0,     // Only HF < 1.0
             parallel_execution: false,      // Sequential by default
             max_concurrent: 3,              // Max 3 concurrent
         }
     }
+}
+
+fn u256_to_f64(value: U256) -> f64 {
+    value.to_string().parse::<f64>().unwrap_or(f64::INFINITY)
+}
+
+fn resolve_token_address(asset: &str, chain_id: u64) -> Option<Address> {
+    if let Ok(addr) = asset.parse::<Address>() {
+        return Some(addr);
+    }
+
+    let symbol = asset.trim().to_ascii_uppercase();
+
+    let env_key = format!("RESERVE_{}", symbol);
+    if let Ok(v) = std::env::var(&env_key) {
+        if let Ok(addr) = v.trim().parse::<Address>() {
+            return Some(addr);
+        }
+    }
+
+    let default = match chain_id {
+        11155111 => match symbol.as_str() {
+            "WETH" => "0xC558DBdd856501FCd9aaF1E62eae57A9F0629a3c",
+            "USDC" => "0x94a9D9AC8a22534E3FaCa9F4e7F2E2cf85d5E4C8",
+            "WBTC" => "0x29f2D40B0605204364af54EC677bD022dA425d03",
+            "DAI" => "0x68194a729C2450ad26072b3D33ADaCbcef39D574",
+            "USDT" => "0xC2C527C0CACF457746Bd31B2a698Fe89de2b6d49",
+            "LINK" => "0xf97f4df75117a78c1A5a0DBb814Af92458539FB4",
+            "AAVE" => "0x6Ae43d3271ff6888e7Fc43Fd7321a503ff738951",
+            _ => return None,
+        },
+        _ => match symbol.as_str() {
+            "WETH" => "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+            "USDC" => "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+            "WBTC" => "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
+            "DAI" => "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+            "USDT" => "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+            "LINK" => "0x514910771AF9Ca656af840dff83E8264EcF986CA",
+            "AAVE" => "0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DdAE9",
+            _ => return None,
+        },
+    };
+
+    default.parse::<Address>().ok()
 }
 
 /// Run the executor worker as a background task
@@ -100,7 +145,7 @@ pub async fn executor_worker(
         if let Some(ref decider) = strategy_decider {
             match executor.wallet_balance().await {
                 Ok(balance) => {
-                    decider.update_wallet_balance(balance.as_u128() as f64 / 1e18).await;
+                    decider.update_wallet_balance(u256_to_f64(balance) / 1e18).await;
                 }
                 Err(e) => {
                     tracing::debug!("Failed to refresh strategy wallet balance: {:?}", e);
@@ -127,10 +172,39 @@ pub async fn executor_worker(
                     })
                     .collect::<Vec<_>>()
             } else if let Some(ref decider) = strategy_decider {
+                let chain_id = executor.chain_id().await.unwrap_or(1);
                 let estimates_by_user: std::collections::HashMap<_, _> = estimates
                     .iter()
                     .map(|e| (e.user_address.clone(), e.clone()))
                     .collect();
+
+                // Refresh strategy debt-token balances from on-chain wallet state.
+                // Strategy compares debt_to_cover_usd vs wallet token balance (USD equivalent).
+                let mut debt_assets: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+                for e in &estimates {
+                    debt_assets
+                        .entry(e.pair.debt_asset.clone())
+                        .or_insert(e.pair.debt_price_usd.max(0.0));
+                }
+
+                for (asset, debt_price_usd) in debt_assets {
+                    if let Some(token_addr) = resolve_token_address(&asset, chain_id) {
+                        match executor.wallet_token_balance(token_addr).await {
+                            Ok((balance_tokens, _decimals)) => {
+                                let balance_usd = balance_tokens * debt_price_usd;
+                                decider.update_token_balance(asset.clone(), balance_usd).await;
+                            }
+                            Err(e) => {
+                                tracing::debug!(
+                                    "Failed to refresh token balance for {} ({:?}): {:?}",
+                                    asset,
+                                    token_addr,
+                                    e
+                                );
+                            }
+                        }
+                    }
+                }
 
                 let pairs: Vec<_> = liquidatable
                     .iter()
@@ -328,6 +402,29 @@ async fn execute_target(
     }
 }
 
+fn should_trip_circuit_breaker(error: &str) -> bool {
+    let err = error.to_ascii_lowercase();
+
+    // Soft failures happen before transaction execution and should not
+    // trip circuit breaker aggressively.
+    let soft_prefixes = [
+        "preflight failed:",
+        "approval failed:",
+        "simulation failed:",
+        "flash-loan simulation failed:",
+        "already pending",
+        "too many pending transactions",
+        "strategy requested skip:",
+    ];
+
+    !soft_prefixes.iter().any(|p| err.starts_with(p))
+}
+
+fn should_drop_target_after_failure(error: &str) -> bool {
+    let err = error.to_ascii_lowercase();
+    err.contains("preflight failed:") && err.contains("health factor") && err.contains(">= 1.0")
+}
+
 /// Handle liquidation result
 async fn handle_result(
     storage: &Arc<HybridStorage>,
@@ -369,14 +466,30 @@ async fn handle_result(
             result.gas_used
         );
     } else {
-        if let Some(decider) = strategy_decider {
-            decider.report_failure().await;
+        let error_msg = result.error.unwrap_or_else(|| "unknown error".to_string());
+
+        if should_drop_target_after_failure(&error_msg) {
+            // On-chain state says user is no longer liquidatable. Remove stale
+            // cache entry and wait for next risk update to re-add if needed.
+            storage.remove_target(&target.user_address).await;
         }
 
-        tracing::debug!(
+        if let Some(decider) = strategy_decider {
+            if should_trip_circuit_breaker(&error_msg) {
+                decider.report_failure().await;
+            } else {
+                tracing::info!(
+                    "Skipping circuit-breaker increment for pre-execution failure user={}: {}",
+                    target.user_address,
+                    error_msg
+                );
+            }
+        }
+
+        tracing::warn!(
             "❌ Liquidation failed for {}: {}",
             target.user_address,
-            result.error.unwrap_or_default()
+            error_msg
         );
     }
 }
@@ -404,7 +517,7 @@ pub async fn stats_worker(executor: Arc<LiquidationExecutor>, interval_secs: u64
         // Check wallet balance
         match executor.wallet_balance().await {
             Ok(balance) => {
-                let eth_balance = balance.as_u128() as f64 / 1e18;
+                let eth_balance = u256_to_f64(balance) / 1e18;
                 tracing::info!("Wallet balance: {:.4} ETH", eth_balance);
                 
                 if eth_balance < 0.1 {

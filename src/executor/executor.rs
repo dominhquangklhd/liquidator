@@ -19,6 +19,54 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use std::collections::HashMap;
 
+fn resolve_token_address(asset: &str, chain_id: u64) -> Option<Address> {
+    if let Ok(addr) = asset.parse::<Address>() {
+        return Some(addr);
+    }
+
+    let normalized = asset.trim().to_ascii_uppercase();
+    let symbol = match normalized.as_str() {
+        "ETH" => "WETH",
+        other => other,
+    };
+
+    let env_key = format!("RESERVE_{}", symbol);
+    if let Ok(v) = std::env::var(&env_key) {
+        if let Ok(addr) = v.trim().parse::<Address>() {
+            return Some(addr);
+        }
+    }
+
+    let default = match chain_id {
+        11155111 => match symbol {
+            "WETH" => "0xC558DBdd856501FCd9aaF1E62eae57A9F0629a3c",
+            "USDC" => "0x94a9D9AC8a22534E3FaCa9F4e7F2E2cf85d5E4C8",
+            "WBTC" => "0x29f2D40B0605204364af54EC677bD022dA425d03",
+            "DAI" => "0x68194a729C2450ad26072b3D33ADaCbcef39D574",
+            "USDT" => "0xC2C527C0CACF457746Bd31B2a698Fe89de2b6d49",
+            "LINK" => "0xf97f4df75117a78c1A5a0DBb814Af92458539FB4",
+            "AAVE" => "0x6Ae43d3271ff6888e7Fc43Fd7321a503ff738951",
+            _ => return None,
+        },
+        _ => match symbol {
+            "WETH" => "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+            "USDC" => "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+            "WBTC" => "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
+            "DAI" => "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+            "USDT" => "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+            "LINK" => "0x514910771AF9Ca656af840dff83E8264EcF986CA",
+            "AAVE" => "0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DdAE9",
+            _ => return None,
+        },
+    };
+
+    default.parse::<Address>().ok()
+}
+
+fn u256_to_f64(value: U256) -> f64 {
+    value.to_string().parse::<f64>().unwrap_or(f64::INFINITY)
+}
+
 // Generate Aave Pool contract bindings
 abigen!(
     AavePool,
@@ -34,6 +82,8 @@ abigen!(
     r#"[
         function approve(address spender, uint256 amount) external returns (bool)
         function allowance(address owner, address spender) external view returns (uint256)
+        function balanceOf(address owner) external view returns (uint256)
+        function decimals() external view returns (uint8)
     ]"#
 );
 
@@ -272,9 +322,10 @@ impl LiquidationExecutor {
             .await
             .context("Failed to get user account data")?;
         
-        // Health factor from contract (18 decimals)
+        // Health factor from contract (18 decimals).
+        // Avoid as_u128() panic when protocol returns very large HF after liquidation.
         let hf_raw = account_data.5; // healthFactor is 6th return value
-        let hf = hf_raw.as_u128() as f64 / 1e18;
+        let hf = u256_to_f64(hf_raw) / 1e18;
         
         if hf >= 1.0 {
             bail!("User health factor is {} (>= 1.0), not liquidatable", hf);
@@ -301,6 +352,7 @@ impl LiquidationExecutor {
     /// Simulate direct liquidation using eth_call
     async fn simulate_liquidation(&self, target: &LiquidationTarget) -> Result<()> {
         let user_address: Address = target.user_address.parse()?;
+        let chain_id = self.chain_id().await.unwrap_or(1);
         
         // Get largest debt position
         let (debt_asset, debt_amount) = target.debt
@@ -314,10 +366,10 @@ impl LiquidationExecutor {
             .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
             .context("No collateral positions")?;
         
-        let debt_asset_address: Address = debt_asset.parse()
-            .context("Invalid debt asset address")?;
-        let collateral_asset_address: Address = collateral_asset.parse()
-            .context("Invalid collateral asset address")?;
+        let debt_asset_address = resolve_token_address(debt_asset, chain_id)
+            .with_context(|| format!("Invalid debt asset address: {}", debt_asset))?;
+        let collateral_asset_address = resolve_token_address(collateral_asset, chain_id)
+            .with_context(|| format!("Invalid collateral asset address: {}", collateral_asset))?;
         
         // Use U256::MAX — Aave automatically caps at 50% close factor
         let debt_to_cover = U256::MAX;
@@ -368,6 +420,7 @@ impl LiquidationExecutor {
         gas_limit_override: Option<u64>,
     ) -> Result<LiquidationResult> {
         let user_address: Address = target.user_address.parse()?;
+        let chain_id = self.chain_id().await.unwrap_or(1);
         
         // Get positions to liquidate
         let (debt_asset, debt_amount) = target.debt
@@ -380,8 +433,10 @@ impl LiquidationExecutor {
             .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
             .context("No collateral positions")?;
         
-        let debt_asset_address: Address = debt_asset.parse()?;
-        let collateral_asset_address: Address = collateral_asset.parse()?;
+        let debt_asset_address = resolve_token_address(debt_asset, chain_id)
+            .with_context(|| format!("Invalid debt asset address: {}", debt_asset))?;
+        let collateral_asset_address = resolve_token_address(collateral_asset, chain_id)
+            .with_context(|| format!("Invalid collateral asset address: {}", collateral_asset))?;
         
         // Use U256::MAX — Aave automatically caps at 50% close factor
         let debt_to_cover_f64 = *debt_amount * 0.5;
@@ -589,13 +644,14 @@ impl LiquidationExecutor {
     
     /// Ensure debt token is approved for Aave Pool spending
     async fn ensure_approval(&self, target: &LiquidationTarget) -> Result<()> {
+        let chain_id = self.chain_id().await.unwrap_or(1);
         let (debt_asset, _) = target.debt
             .iter()
             .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
             .context("No debt positions")?;
         
-        let debt_asset_address: Address = debt_asset.parse()
-            .context("Invalid debt asset address")?;
+        let debt_asset_address = resolve_token_address(debt_asset, chain_id)
+            .with_context(|| format!("Invalid debt asset address: {}", debt_asset))?;
         
         let erc20 = ERC20Approve::new(debt_asset_address, Arc::clone(&self.signer));
         
@@ -641,5 +697,35 @@ impl LiquidationExecutor {
             .get_balance(self.wallet.address(), None)
             .await
             .context("Failed to get wallet balance")
+    }
+
+    /// Read chain id from provider (used by worker when resolving reserve addresses).
+    pub async fn chain_id(&self) -> Result<u64> {
+        Ok(self.provider.get_chainid().await?.as_u64())
+    }
+
+    /// Check ERC20 token balance of executor wallet and convert to token units.
+    pub async fn wallet_token_balance(&self, token: Address) -> Result<(f64, u8)> {
+        let erc20 = ERC20Approve::new(token, Arc::clone(&self.signer));
+
+        let raw = erc20
+            .balance_of(self.wallet.address())
+            .call()
+            .await
+            .with_context(|| format!("Failed to read balanceOf for token {:?}", token))?;
+
+        let decimals = erc20
+            .decimals()
+            .call()
+            .await
+            .unwrap_or(18);
+
+        let balance_tokens = raw
+            .to_string()
+            .parse::<f64>()
+            .unwrap_or(0.0)
+            / 10_f64.powi(decimals as i32);
+
+        Ok((balance_tokens, decimals))
     }
 }

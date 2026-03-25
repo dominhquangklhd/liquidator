@@ -334,13 +334,13 @@ async fn main() {
                 Ok(executor) => {
                     let executor = Arc::new(executor);
 
-                    // Main liquidation loop: polls hot cache every 100ms
+                    // Main liquidation loop: polls hot cache every 500ms by default
                     let executor_for_worker = Arc::clone(&executor);
                     let storage_for_worker = Arc::clone(&storage);
                     let profit_for_worker  = Arc::clone(&profit_calculator);
                     let strategy_for_worker = Arc::clone(&strategy_decider);
                     let worker_config = WorkerConfig {
-                        check_interval_ms: env_u64("EXECUTOR_CHECK_INTERVAL_MS", 100),
+                        check_interval_ms: env_u64("EXECUTOR_CHECK_INTERVAL_MS", 500),
                         batch_size: env_usize("EXECUTOR_BATCH_SIZE", 10),
                         liquidation_threshold: env_f64("EXECUTOR_LIQUIDATION_THRESHOLD", 1.0),
                         parallel_execution: env_bool("EXECUTOR_PARALLEL_EXECUTION", false),

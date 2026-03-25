@@ -12,6 +12,10 @@ use crate::risk::bucket::RiskBucket;
 use crate::risk::engine::{RiskEngine, RiskEngineConfig};
 use crate::storage::{HybridStorage, LiquidationTarget};
 
+fn u256_to_f64(value: U256) -> f64 {
+    value.to_string().parse::<f64>().unwrap_or(f64::INFINITY)
+}
+
 abigen!(
     BootstrapAavePool,
     r#"[
@@ -53,7 +57,7 @@ pub async fn bootstrap_onchain_state(
         risk_config.reference_eth_price_usd
     } else {
         let raw = oracle.get_asset_price(eth_reserve).call().await?;
-        let usd = raw.as_u128() as f64 / 1e8;
+        let usd = u256_to_f64(raw) / 1e8;
         if usd > 0.0 {
             usd
         } else {
@@ -67,7 +71,7 @@ pub async fn bootstrap_onchain_state(
             .get_asset_price(*reserve_addr)
             .call()
             .await
-            .map(|v| v.as_u128() as f64 / 1e8)
+            .map(|v| u256_to_f64(v) / 1e8)
             .unwrap_or_else(|_| fallback_price_usd(symbol.as_str(), eth_price_usd));
 
         let price_in_eth = if symbol == "ETH" || symbol == "WETH" {
@@ -123,13 +127,9 @@ pub async fn bootstrap_onchain_state(
             continue;
         };
 
-        let collateral_usd = total_collateral_base.as_u128() as f64 / 1e8;
-        let debt_usd = total_debt_base.as_u128() as f64 / 1e8;
-        let hf = if hf_raw > U256::from(u128::MAX) {
-            f64::MAX
-        } else {
-            hf_raw.as_u128() as f64 / 1e18
-        };
+        let collateral_usd = u256_to_f64(total_collateral_base) / 1e8;
+        let debt_usd = u256_to_f64(total_debt_base) / 1e8;
+        let hf = u256_to_f64(hf_raw) / 1e18;
 
         let user_id = format!("{:?}", user_addr);
         let mut user = User::new(user_id.clone());
