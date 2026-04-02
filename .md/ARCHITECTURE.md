@@ -320,7 +320,7 @@ user_risky: Collateral=10 ETH, Debt=16000 USDC → HF = 0.95 🔴
 ## 🔮 Future Enhancements
 
 1. **Oracle Integration**: Chainlink price feeds
-2. **Mempool Monitoring**: Front-running protection
+2. **Event Batching**: Reduce redundant HF recompute during event bursts
 3. **Execution Layer**: Automated liquidation transactions
 4. **Gas Optimization**: Flashbots/MEV integration
 5. **Multi-chain Support**: Aave V3 trên Polygon, Arbitrum, etc.

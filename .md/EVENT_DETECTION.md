@@ -2,7 +2,7 @@
 
 ## Cách hoạt động
 
-Bot liquidator của bạn hiện có 3 cơ chế phát hiện sự kiện:
+Bot liquidator của bạn hiện có 2 cơ chế phát hiện sự kiện:
 
 ### 1. **Block Watcher** ✅
 - Poll blockchain mỗi 12 giây để phát hiện block mới
@@ -20,12 +20,10 @@ Bot liquidator của bạn hiện có 3 cơ chế phát hiện sự kiện:
 - Tự động gửi event đến RiskEngine để kiểm tra health factor
 - File: `src/provider/rpc.rs` - method `watch_aave_events()`
 
-### 3. **Mempool Watcher** (Chưa implement đầy đủ)
-- Local forks (Anvil/Hardhat) thường không hỗ trợ mempool thực
-- Trên mainnet có thể dùng:
-  - `eth_subscribe('newPendingTransactions')`
-  - Flashbots RPC
-  - MEV-Boost
+### 3. **PriceUpdate Source (Oracle)** ✅
+- Oracle workers phát hiện lệch giá và emit `Event::PriceUpdate`
+- Dùng chung event channel với Block/Aave events
+- Không phụ thuộc pending transaction stream
 
 ## Setup
 
@@ -75,11 +73,11 @@ Blockchain (http://127.0.0.1:8545)
     ├─── Aave Event Watcher ──┤ ──> mpsc::channel
     │    (mỗi 3s)            │       │
     │                         │       ▼
-    └─── Mempool Watcher ─────┘   RiskEngine
-         (future)                   │
-                                    ├─ Calculate Health Factor
-                                    ├─ Detect Liquidation Opportunities
-                                    └─ Send to Executor
+                          RiskEngine
+                            │
+                            ├─ Calculate Health Factor
+                            ├─ Detect Liquidation Opportunities
+                            └─ Send to Executor
 ```
 
 ## Events được phát hiện
@@ -87,11 +85,6 @@ Blockchain (http://127.0.0.1:8545)
 ### Event::PriceUpdate
 - Từ Oracle hoặc price feed
 - Trigger health factor recalculation cho tất cả users
-
-### Event::MempoolTx
-- Từ Aave events (Borrow, Withdraw, Repay)
-- Chứa thông tin user và assets bị ảnh hưởng
-- Trigger health factor check cho user cụ thể
 
 ### Event::Block
 - New block detected
@@ -165,6 +158,7 @@ let provider = Provider::<Ws>::connect("ws://127.0.0.1:8545").await?;
 - Check event signatures có đúng không (Aave V2 vs V3 khác nhau)
 - Thử giảm polling interval
 
-### "Mempool not working"
-- Local forks thường không có mempool thực
-- Cần deploy lên testnet/mainnet hoặc dùng service như Flashbots
+### "No events detected"
+- Verify có transactions xảy ra trên blockchain không
+- Check event signatures có đúng không (Aave V2 vs V3 khác nhau)
+- Thử giảm polling interval

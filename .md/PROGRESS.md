@@ -2,7 +2,7 @@
 
 ## Tổng quan kiến trúc
 
-Bot liquidation chuyên nghiệp cần **12 luồng (threads/tasks)** chính:
+Bot liquidation chuyên nghiệp cần **11 luồng (threads/tasks)** chính:
 
 | # | Thread | Vai trò | Trạng thái |
 |---|--------|---------|------------|
@@ -13,11 +13,10 @@ Bot liquidation chuyên nghiệp cần **12 luồng (threads/tasks)** chính:
 | 5 | Storage Sync | Đồng bộ hot cache ↔ cold storage (SQLite) | ✅ Đã triển khai |
 | 6 | Stats Logger | Ghi log thống kê định kỳ | ✅ Đã triển khai |
 | 7 | Oracle Price Feeds | Theo dõi giá từ Chainlink/Pyth realtime | ✅ Đã triển khai |
-| 8 | Mempool Monitor | Phát hiện pending TX có thể trigger liquidation | ❌ Chưa triển khai |
-| 9 | Profit Calculator | Tính toán lợi nhuận ước tính cho mỗi cơ hội | ✅ Đã triển khai |
-| 10 | Strategy Decider | Quyết định chiến lược liquidation (Direct vs Flash Loan, priority scoring) | ✅ Đã triển khai |
-| 11 | Nonce Manager Sync | Đồng bộ nonce với on-chain | ✅ Đã triển khai |
-| 12 | Memory Monitor | Giám sát RAM, auto evict cache khi cần | ✅ Đã triển khai |
+| 8 | Profit Calculator | Tính toán lợi nhuận ước tính cho mỗi cơ hội | ✅ Đã triển khai |
+| 9 | Strategy Decider | Quyết định chiến lược liquidation (Direct vs Flash Loan, priority scoring) | ✅ Đã triển khai |
+| 10 | Nonce Manager Sync | Đồng bộ nonce với on-chain | ✅ Đã triển khai |
+| 11 | Memory Monitor | Giám sát RAM, auto evict cache khi cần | ✅ Đã triển khai |
 
 ---
 
@@ -37,7 +36,7 @@ Bot liquidation chuyên nghiệp cần **12 luồng (threads/tasks)** chính:
 - [x] **Risk Bucket** (`bucket.rs`) - Phân loại: Safe/Warning/Danger/Critical/Liquidatable
 
 ### 3. Events Module (`src/events/`)
-- [x] **Event enum** (`event.rs`) - PriceUpdate, MempoolTx, Block
+- [x] **Event enum** (`event.rs`) - PriceUpdate, Block
 - [x] **Dispatcher** (`dispatcher.rs`) - Phân phối event đến các consumer
 
 ### 4. Data Module (`src/data/`)
@@ -49,7 +48,6 @@ Bot liquidation chuyên nghiệp cần **12 luồng (threads/tasks)** chính:
 - [x] **AaveProvider** (`rpc.rs`) - Kết nối RPC, ethers-rs
 - [x] **Block Watcher** - Polling 12s, phát event khi có block mới
 - [x] **Event Watcher** - Polling 3s cho Borrow/Withdraw/Repay/LiquidationCall logs
-- [x] **Mempool Watcher** - Stub (placeholder, cần RPC đặc biệt)
 
 ### 6. Executor Module (`src/executor/`)
 - [x] **ExecutorConfig** (`config.rs`) - Cấu hình: min_profit, max_gas, gas_limit, dry_run
@@ -126,14 +124,7 @@ Bot liquidation chuyên nghiệp cần **12 luồng (threads/tasks)** chính:
 
 ## ❌ Công việc chưa triển khai
 
-### 1. Mempool Monitor (`src/mempool/mod.rs`) - **Ưu tiên: TRUNG BÌNH**
-- [ ] Subscribe pending transactions (eth_subscribe)
-- [ ] Filter transactions liên quan đến Aave Pool
-- [ ] Decode calldata (Borrow, Withdraw, Repay)
-- [ ] Dự đoán HF thay đổi TRƯỚC KHI block confirm
-- [ ] Phát `Event::MempoolTx` cho RiskEngine
-- [ ] Frontrun detection (phát hiện bot khác cũng muốn liquidate)
-- [ ] Flashbots integration (private transaction)
+Hiện chưa còn module cốt lõi nào bị thiếu trong phạm vi local-fork demo.
 
 ---
 
@@ -175,7 +166,7 @@ Phase 1 (Core - Bắt buộc):
   
 Phase 2 (Competitive Edge):
   3. ✅ Strategy Decider   ← ĐÃ TRIỂN KHAI (Direct vs Flash Loan + priority scoring)
-  4. Mempool Monitor     ← Phát hiện cơ hội sớm hơn
+  4. Event Batching      ← Gom sự kiện để giảm recompute dư thừa
 
 Phase 3 (Production Ready):
   5. WebSocket provider  ← Giảm latency
@@ -188,14 +179,13 @@ Phase 3 (Production Ready):
 ## 📊 Tiến độ tổng thể
 
 ```
-Hoàn thành:  10/11 modules  (91%)
-Còn lại:      1/11 modules  ( 9%)
+Hoàn thành:  11/11 modules  (100%)
+Còn lại:      0/11 modules  (  0%)
 
-[██████████████████████░░░] 91%
+[█████████████████████████] 100%
 ```
 
-> **Ghi chú**: Mempool Monitor là module duy nhất còn lại.
-> Mempool Monitor cần WebSocket RPC hoặc Flashbots relay.
+> **Ghi chú**: Kiến trúc hiện tập trung cho demo local fork với luồng PriceUpdate + Block.
 
 ---
 

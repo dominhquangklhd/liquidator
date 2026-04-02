@@ -2,7 +2,6 @@ mod events;
 mod risk;
 mod data;
 mod executor;
-mod mempool;
 mod oracle;
 mod profit;
 mod provider;
@@ -137,7 +136,6 @@ async fn main() {
     // ============================================================================
     
     let risk_config = RiskEngineConfig {
-        mempool_speculative_hf_penalty: env_f64("MEMPOOL_SPECULATIVE_HF_PENALTY", 0.03),
         reference_eth_price_usd: env_f64("REFERENCE_ETH_PRICE_USD", 2000.0),
         default_liquidation_threshold: env_f64("DEFAULT_LIQUIDATION_THRESHOLD", 0.85),
         risk_score_hf_baseline: env_f64("RISK_SCORE_HF_BASELINE", 1.5),
@@ -208,10 +206,9 @@ async fn main() {
     // - Withdraw (rút collateral)
     // - Liquidation (thanh lý)
     let provider_for_events = Arc::clone(&provider);
-    let tx_for_events = tx.clone();
     tokio::spawn(async move {
         if let Err(e) = provider_for_events
-            .watch_aave_events(aave_pool_address, tx_for_events)
+            .watch_aave_events(aave_pool_address)
             .await
         {
             tracing::error!("Aave event watcher error: {:?}", e);

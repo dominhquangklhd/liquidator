@@ -6,7 +6,7 @@ use tokio::time::{sleep, Duration, Instant};
 
 use liquidator::data::{asset::Asset, user::User};
 use liquidator::events::event::Event;
-use liquidator::risk::engine::{RiskEngine, RiskEngineConfig};
+use liquidator::risk::engine::RiskEngine;
 use liquidator::storage::{HybridStorage, StorageConfig};
 
 fn unique_db_path(prefix: &str) -> String {
@@ -36,30 +36,22 @@ where
 }
 
 #[tokio::test]
-async fn test_mempool_then_block_updates_storage_pipeline() {
-    // Keep a narrow threshold to clearly see cache add/remove transitions.
+async fn test_price_update_pipeline_updates_storage_and_block_keeps_state() {
+    // Keep a narrow threshold so a single price move can push a user into hot cache.
     let storage = Arc::new(
         HybridStorage::with_config(StorageConfig {
             hot_cache_size: 100,
             hot_cache_threshold: 1.2,
             sync_interval_secs: 60,
-            db_path: unique_db_path("risk_event_pipeline"),
+            db_path: unique_db_path("risk_event_pipeline_price_only"),
         })
         .await
         .expect("storage init"),
     );
 
     let (tx, rx) = mpsc::channel(32);
-    let mut engine = RiskEngine::with_config(
-        rx,
-        Arc::clone(&storage),
-        RiskEngineConfig {
-            mempool_speculative_hf_penalty: 0.05,
-            ..Default::default()
-        },
-    );
+    let mut engine = RiskEngine::with_config(rx, Arc::clone(&storage), Default::default());
 
-    // Asset setup (ETH base + USDC quoted in ETH)
     engine.assets.insert(
         "ETH".to_string(),
         Asset {
@@ -83,30 +75,27 @@ async fn test_mempool_then_block_updates_storage_pipeline() {
         },
     );
 
-    // This position has HF ~1.214 (>1.2 threshold), so not in hot cache at baseline.
-    let mut user = User::new("user_pipeline".to_string());
+    // Baseline HF at ETH=1.0: (10 * 1.0 * 0.85) / (6000 * 0.0005) = 2.833 (> 1.2)
+    // After price update ETH=0.4: (10 * 0.4 * 0.85) / (6000 * 0.0005) = 1.133 (< 1.2)
+    let mut user = User::new("user_pipeline_price_only".to_string());
     user.collateral.insert("ETH".to_string(), 10.0);
-    user.debt.insert("USDC".to_string(), 14_000.0);
+    user.debt.insert("USDC".to_string(), 6_000.0);
     engine.users.insert(user.id.clone(), user);
     engine
         .registry
-        .add_user_to_asset("ETH".to_string(), "user_pipeline".to_string());
-    engine
-        .registry
-        .add_user_to_asset("USDC".to_string(), "user_pipeline".to_string());
+        .add_user_to_asset("ETH".to_string(), "user_pipeline_price_only".to_string());
 
     let users_ref = Arc::clone(&engine.users);
     let engine_handle = tokio::spawn(async move {
         engine.run().await;
     });
 
-    // 1) Mempool event should apply speculative penalty and push user into hot cache.
-    tx.send(Event::MempoolTx {
-        user_id: "user_pipeline".to_string(),
-        affected_assets: vec!["ETH".to_string(), "USDC".to_string()],
+    tx.send(Event::PriceUpdate {
+        asset_id: "ETH".to_string(),
+        new_price: 0.4,
     })
     .await
-    .expect("send mempool event");
+    .expect("send price update event");
 
     let inserted = wait_until(Duration::from_secs(2), || {
         let storage = Arc::clone(&storage);
@@ -115,49 +104,46 @@ async fn test_mempool_then_block_updates_storage_pipeline() {
                 .get_top_targets(10)
                 .await
                 .iter()
-                .any(|t| t.user_address == "user_pipeline")
+                .any(|t| t.user_address == "user_pipeline_price_only")
         }
     })
     .await;
-    assert!(inserted, "mempool speculative path should add user into hot cache");
+    assert!(inserted, "price-update path should add user into hot cache");
 
-    // Check HF was penalized in-memory.
-    let hf_after_mempool = users_ref
-        .get("user_pipeline")
+    let hf_after_price = users_ref
+        .get("user_pipeline_price_only")
         .expect("user exists")
         .health_factor;
     assert!(
-        hf_after_mempool < 1.2,
-        "speculative HF should drop below threshold, got {}",
-        hf_after_mempool
+        hf_after_price < 1.2,
+        "HF should drop below threshold after price update, got {}",
+        hf_after_price
     );
 
-    // 2) New block should reconcile using non-speculative HF and remove from cache.
+    // Block event is still consumed by the engine and should not undo price-based state.
     tx.send(Event::Block { block_number: 123456 })
         .await
         .expect("send block event");
 
-    let removed = wait_until(Duration::from_secs(2), || {
-        let storage = Arc::clone(&storage);
-        async move {
-            !storage
-                .get_top_targets(10)
-                .await
-                .iter()
-                .any(|t| t.user_address == "user_pipeline")
-        }
-    })
-    .await;
-    assert!(removed, "block reconciliation should remove user from hot cache");
+    sleep(Duration::from_millis(150)).await;
+
+    let still_present = storage
+        .get_top_targets(10)
+        .await
+        .iter()
+        .any(|t| t.user_address == "user_pipeline_price_only");
+    assert!(
+        still_present,
+        "block event should not remove price-triggered target from hot cache"
+    );
 
     let hf_after_block = users_ref
-        .get("user_pipeline")
+        .get("user_pipeline_price_only")
         .expect("user exists")
         .health_factor;
     assert!(
-        hf_after_block > 1.2,
-        "post-block HF should recover above threshold, got {}",
-        hf_after_block
+        (hf_after_block - hf_after_price).abs() < 1e-9,
+        "block event should keep HF unchanged without new price events"
     );
 
     drop(tx);

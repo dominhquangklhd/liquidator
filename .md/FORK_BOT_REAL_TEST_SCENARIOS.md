@@ -77,28 +77,27 @@ Pass/Fail:
 
 ---
 
-### Scenario C - MempoolTx -> Block reconcile
+### Scenario C - PriceUpdate -> Block stability
 
 Muc tieu:
 
-- Xac nhan speculative penalty + reconcile hoat dong dung.
+- Xac nhan event Block khong lam sai lech ket qua da tinh tu PriceUpdate.
 
 Buoc chay:
 
-1. Chay bot voi MEMPOOL_SPECULATIVE_HF_PENALTY > 0.
-2. Tao giao dich mempool lien quan user (hoac event gia lap tu watcher).
-3. Quan sat user vao pending/hot cache.
-4. Cho block tiep theo, quan sat reconcile.
+1. Chay bot voi scenario da co user gan nguong liquidation.
+2. Tao PriceUpdate (vi du crash ETH nhe).
+3. Quan sat user vao hot cache va HF thay doi.
+4. Cho block tiep theo, quan sat trang thai van on dinh.
 
 Expected:
 
-- Mempool phase: HF giam theo penalty, user vao hot cache som.
-- Block phase: pending users duoc drain, HF tinh lai khong penalty.
-- Neu user an toan lai, bi loai khoi hot cache.
+- PriceUpdate phase: HF cap nhat dung theo gia moi, target duoc cap nhat vao cache.
+- Block phase: khong tu y rollback HF neu khong co event gia moi.
 
 Pass/Fail:
 
-- Pass neu thay day du 2 pha va ket qua cuoi phu hop HF thuc te.
+- Pass neu thay day du 2 pha va HF sau block giong HF sau PriceUpdate.
 
 ---
 

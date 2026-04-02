@@ -1,8 +1,7 @@
 use std::sync::Arc;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use dashmap::DashMap;
 use tokio::sync::mpsc;
-use tokio::sync::RwLock;
 use crate::data::asset::{Asset, AssetId};
 use crate::data::user::{User, UserId};
 use crate::data::registry::Registry;
@@ -13,9 +12,6 @@ use crate::storage::{HybridStorage, LiquidationTarget};
 
 #[derive(Debug, Clone)]
 pub struct RiskEngineConfig {
-    /// Temporary HF penalty applied on mempool events before block confirmation.
-    pub mempool_speculative_hf_penalty: f64,
-
     /// Reference ETH/USD used to convert asset amounts (priced in ETH) into USD.
     pub reference_eth_price_usd: f64,
 
@@ -32,7 +28,6 @@ pub struct RiskEngineConfig {
 impl Default for RiskEngineConfig {
     fn default() -> Self {
         Self {
-            mempool_speculative_hf_penalty: 0.03,
             reference_eth_price_usd: 2000.0,
             default_liquidation_threshold: 0.85,
             risk_score_hf_baseline: 1.5,
@@ -49,7 +44,6 @@ pub struct RiskEngine {
     pub registry: Arc<Registry>,
     receiver: mpsc::Receiver<Event>,
     storage: Arc<HybridStorage>,
-    pending_users: Arc<RwLock<HashSet<UserId>>>,
     config: RiskEngineConfig,
 }
 
@@ -69,7 +63,6 @@ impl RiskEngine {
             registry: Arc::new(Registry::new()),
             receiver,
             storage,
-            pending_users: Arc::new(RwLock::new(HashSet::new())),
             config,
         }
     }
@@ -81,9 +74,6 @@ impl RiskEngine {
             match event {
                 Event::PriceUpdate { asset_id, new_price } => {
                     self.handle_price_update(asset_id, new_price).await;
-                }
-                Event::MempoolTx { user_id, affected_assets } => {
-                    self.handle_mempool_tx(user_id, affected_assets).await;
                 }
                 Event::Block { block_number } => {
                     self.handle_block(block_number).await;
@@ -104,69 +94,17 @@ impl RiskEngine {
         // 2. Fetch affected users and run unified reevaluation pipeline.
         let affected_users = self.registry.get_users_for_asset(&asset_id);
         tracing::debug!("Price update for {} ({} users affected)", asset_id, affected_users.len());
-        self.recalculate_and_sync_users(affected_users, "price_update", false).await;
-    }
-
-    async fn handle_mempool_tx(&self, user_id: UserId, affected_assets: Vec<AssetId>) {
-        tracing::debug!(
-            "Mempool tx detected for user {} (assets: {:?})",
-            user_id,
-            affected_assets
-        );
-
-        // 1) Mark directly involved user for next block reconciliation.
-        {
-            let mut pending = self.pending_users.write().await;
-            pending.insert(user_id.clone());
-        }
-
-        // 2) Also mark other users exposed to affected assets.
-        let mut impacted: HashSet<UserId> = HashSet::from([user_id]);
-        for asset_id in affected_assets {
-            for uid in self.registry.get_users_for_asset(&asset_id) {
-                impacted.insert(uid);
-            }
-        }
-
-        {
-            let mut pending = self.pending_users.write().await;
-            for uid in &impacted {
-                pending.insert(uid.clone());
-            }
-        }
-
-        // 3) Speculative fast-path update so storage/executor can react before next block.
-        self.recalculate_and_sync_users(impacted.into_iter().collect(), "mempool", true).await;
+        self.recalculate_and_sync_users(affected_users, "price_update").await;
     }
 
     async fn handle_block(&self, block_number: u64) {
-        tracing::info!("New block: {}", block_number);
-
-        // Reconcile users touched by mempool events at each new block.
-        let users_to_reconcile = {
-            let mut pending = self.pending_users.write().await;
-            let users = pending.iter().cloned().collect::<Vec<_>>();
-            pending.clear();
-            users
-        };
-
-        if users_to_reconcile.is_empty() {
-            return;
-        }
-
-        tracing::debug!(
-            "Block {} reconciliation for {} pending users",
-            block_number,
-            users_to_reconcile.len()
-        );
-        self.recalculate_and_sync_users(users_to_reconcile, "block_reconcile", false).await;
+        tracing::debug!("New block observed: {}", block_number);
     }
 
     async fn recalculate_and_sync_users(
         &self,
         user_ids: Vec<UserId>,
         reason: &str,
-        speculative_penalty: bool,
     ) {
         if user_ids.is_empty() {
             return;
@@ -183,12 +121,7 @@ impl RiskEngine {
         for user_id in user_ids {
             if let Some(mut user) = self.users.get_mut(&user_id) {
                 let old_hf = user.health_factor;
-                let mut new_hf = HealthFactorCalculator::calculate(&user, &asset_snapshot);
-
-                if speculative_penalty {
-                    // Pending mempool tx may worsen position before block inclusion.
-                    new_hf = (new_hf - self.config.mempool_speculative_hf_penalty).max(0.0);
-                }
+                let new_hf = HealthFactorCalculator::calculate(&user, &asset_snapshot);
 
                 let old_bucket = user.risk_bucket;
                 let new_bucket = RiskBucket::from_hf(new_hf);

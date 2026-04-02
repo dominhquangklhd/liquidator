@@ -6,7 +6,7 @@ A high-performance, event-driven risk monitoring system in Rust for a DeFi lendi
 
 The system is designed with a clean, modular architecture:
 
--   **`src/events`**: Defines the `Event` enum (Price, Mempool, Block) and the async `Dispatcher`.
+-   **`src/events`**: Defines the `Event` enum (Price, Block) and the async `Dispatcher`.
 -   **`src/risk`**: Contains the core risk logic:
     -   `engine.rs`: The main event loop processing updates.
     -   `health_factor.rs`: Logic to calculate User HF.
@@ -16,7 +16,7 @@ The system is designed with a clean, modular architecture:
 
 ## Key Features
 
--   **Event-Driven**: Reacts to Price and Mempool events immediately.
+-   **Event-Driven**: Reacts to price updates and block ticks immediately.
 -   **O(1) Lookup**: Uses an Asset Registry to find affected users without scanning the entire user base.
 -   **Incremental Updates**: Only recalculates HF for users affected by specific asset price changes.
 -   **Concurrency**: Uses `dashmap` for concurrent handling of state (though currently single-threaded runner for strict ordering, can be parallelized).

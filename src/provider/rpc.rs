@@ -114,7 +114,6 @@ impl AaveProvider {
     pub async fn watch_aave_events(
         &self,
         aave_pool_address: H160,
-        tx: mpsc::Sender<crate::events::event::Event>,
     ) -> Result<()> {
         tracing::info!(
             "Starting Aave event watcher for pool: {:?} (interval={}s)",
@@ -175,7 +174,7 @@ impl AaveProvider {
                     tracing::info!("Found {} Aave events in blocks {}-{}", logs.len(), last_block + 1, current_block);
                     
                     for log in logs {
-                        self.process_aave_log(log, &tx).await;
+                        self.process_aave_log(log).await;
                     }
                 }
                 Err(e) => {
@@ -187,8 +186,8 @@ impl AaveProvider {
         }
     }
 
-    /// Xử lý log từ Aave contract và emit Event
-    async fn process_aave_log(&self, log: Log, tx: &mpsc::Sender<crate::events::event::Event>) {
+    /// Xử lý log từ Aave contract để ghi nhận hoạt động on-chain
+    async fn process_aave_log(&self, log: Log) {
         // Parse topics để xác định event type
         if log.topics.is_empty() {
             return;
@@ -230,15 +229,12 @@ impl AaveProvider {
                 );
             }
 
-            if let Err(e) = tx
-                .send(crate::events::event::Event::MempoolTx {
-                    user_id: user_address,
-                    affected_assets,
-                })
-                .await
-            {
-                tracing::error!("Failed to send event: {:?}", e);
-            }
+            tracing::debug!(
+                "Aave {} user={} assets={:?}",
+                event_name,
+                user_address,
+                affected_assets
+            );
         }
     }
 
@@ -274,19 +270,6 @@ impl AaveProvider {
             .and_then(|reserve| self.reserve_asset_map.get(&reserve).cloned())
     }
 
-    /// Watch mempool for pending transactions (requires special RPC support)
-    /// Note: Anvil/Hardhat thường không support mempool subscription như mainnet
-    pub async fn watch_mempool(&self, _tx: mpsc::Sender<crate::events::event::Event>) -> Result<()> {
-        tracing::warn!("Mempool watching is not fully supported on local forks");
-        tracing::info!("For mempool detection, consider using:");
-        tracing::info!("  - Flashbots RPC on mainnet");
-        tracing::info!("  - eth_subscribe('newPendingTransactions') on supported nodes");
-        
-        // Placeholder - local forks usually don't have real mempool
-        // On mainnet: use provider.subscribe_pending_txs().await
-        
-        Ok(())
-    }
 }
 
 fn env_u64(key: &str, default: u64) -> u64 {
