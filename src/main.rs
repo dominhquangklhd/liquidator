@@ -206,9 +206,10 @@ async fn main() {
     // - Withdraw (rút collateral)
     // - Liquidation (thanh lý)
     let provider_for_events = Arc::clone(&provider);
+    let tx_for_events = tx.clone();
     tokio::spawn(async move {
         if let Err(e) = provider_for_events
-            .watch_aave_events(aave_pool_address)
+            .watch_aave_events(aave_pool_address, tx_for_events)
             .await
         {
             tracing::error!("Aave event watcher error: {:?}", e);

@@ -75,6 +75,18 @@ impl RiskEngine {
                 Event::PriceUpdate { asset_id, new_price } => {
                     self.handle_price_update(asset_id, new_price).await;
                 }
+                Event::UserDeposit { user_id, asset_id, amount } => {
+                    self.handle_user_deposit(user_id, asset_id, amount).await;
+                }
+                Event::UserWithdraw { user_id, asset_id, amount } => {
+                    self.handle_user_withdraw(user_id, asset_id, amount).await;
+                }
+                Event::UserBorrow { user_id, asset_id, amount } => {
+                    self.handle_user_borrow(user_id, asset_id, amount).await;
+                }
+                Event::UserRepay { user_id, asset_id, amount } => {
+                    self.handle_user_repay(user_id, asset_id, amount).await;
+                }
                 Event::Block { block_number } => {
                     self.handle_block(block_number).await;
                 }
@@ -99,6 +111,156 @@ impl RiskEngine {
 
     async fn handle_block(&self, block_number: u64) {
         tracing::debug!("New block observed: {}", block_number);
+    }
+
+    async fn handle_user_deposit(&self, user_id: UserId, asset_id: AssetId, amount: f64) {
+        if amount <= 0.0 {
+            return;
+        }
+
+        let mut should_recalculate = false;
+        if let Some(mut user) = self.users.get_mut(&user_id) {
+            let balance = user.collateral.entry(asset_id.clone()).or_insert(0.0);
+            *balance += amount;
+            self.registry.add_user_to_asset(asset_id.clone(), user_id.clone());
+            should_recalculate = true;
+        } else {
+            tracing::debug!(
+                "[user_deposit] ignored for unknown user={} asset={} amount={:.8}",
+                user_id,
+                asset_id,
+                amount
+            );
+            return;
+        }
+
+        tracing::info!(
+            "[user_deposit] user={} asset={} amount={:.8}",
+            user_id,
+            asset_id,
+            amount
+        );
+
+        if should_recalculate {
+            self.recalculate_and_sync_users(vec![user_id], "user_deposit").await;
+        }
+    }
+
+    async fn handle_user_withdraw(&self, user_id: UserId, asset_id: AssetId, amount: f64) {
+        if amount <= 0.0 {
+            return;
+        }
+
+        let mut should_recalculate = false;
+        if let Some(mut user) = self.users.get_mut(&user_id) {
+            let mut remove_from_registry = false;
+            if let Some(balance) = user.collateral.get_mut(&asset_id) {
+                *balance = (*balance - amount).max(0.0);
+                if *balance <= f64::EPSILON {
+                    user.collateral.remove(&asset_id);
+                    remove_from_registry = true;
+                }
+            }
+
+            if remove_from_registry {
+                self.registry.remove_user_from_asset(&asset_id, &user_id);
+            }
+            should_recalculate = true;
+        } else {
+            tracing::debug!(
+                "[user_withdraw] ignored for unknown user={} asset={} amount={:.8}",
+                user_id,
+                asset_id,
+                amount
+            );
+            return;
+        }
+
+        tracing::info!(
+            "[user_withdraw] user={} asset={} amount={:.8}",
+            user_id,
+            asset_id,
+            amount
+        );
+
+        if should_recalculate {
+            self.recalculate_and_sync_users(vec![user_id], "user_withdraw").await;
+        }
+    }
+
+    async fn handle_user_borrow(&self, user_id: UserId, asset_id: AssetId, amount: f64) {
+        if amount <= 0.0 {
+            return;
+        }
+
+        let mut should_recalculate = false;
+        if let Some(mut user) = self.users.get_mut(&user_id) {
+            let balance = user.debt.entry(asset_id.clone()).or_insert(0.0);
+            *balance += amount;
+            self.registry.add_user_to_asset(asset_id.clone(), user_id.clone());
+            should_recalculate = true;
+        } else {
+            tracing::debug!(
+                "[user_borrow] ignored for unknown user={} asset={} amount={:.8}",
+                user_id,
+                asset_id,
+                amount
+            );
+            return;
+        }
+
+        tracing::info!(
+            "[user_borrow] user={} asset={} amount={:.8}",
+            user_id,
+            asset_id,
+            amount
+        );
+
+        if should_recalculate {
+            self.recalculate_and_sync_users(vec![user_id], "user_borrow").await;
+        }
+    }
+
+    async fn handle_user_repay(&self, user_id: UserId, asset_id: AssetId, amount: f64) {
+        if amount <= 0.0 {
+            return;
+        }
+
+        let mut should_recalculate = false;
+        if let Some(mut user) = self.users.get_mut(&user_id) {
+            let mut remove_from_registry = false;
+            if let Some(balance) = user.debt.get_mut(&asset_id) {
+                *balance = (*balance - amount).max(0.0);
+                if *balance <= f64::EPSILON {
+                    user.debt.remove(&asset_id);
+                    remove_from_registry = !user.collateral.contains_key(&asset_id);
+                }
+            }
+
+            if remove_from_registry {
+                self.registry.remove_user_from_asset(&asset_id, &user_id);
+            }
+            should_recalculate = true;
+        } else {
+            tracing::debug!(
+                "[user_repay] ignored for unknown user={} asset={} amount={:.8}",
+                user_id,
+                asset_id,
+                amount
+            );
+            return;
+        }
+
+        tracing::info!(
+            "[user_repay] user={} asset={} amount={:.8}",
+            user_id,
+            asset_id,
+            amount
+        );
+
+        if should_recalculate {
+            self.recalculate_and_sync_users(vec![user_id], "user_repay").await;
+        }
     }
 
     async fn recalculate_and_sync_users(

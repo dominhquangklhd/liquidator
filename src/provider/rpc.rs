@@ -1,7 +1,7 @@
 use ethers::{
     prelude::*,
     providers::{Provider, Http, Middleware},
-    types::{Filter, Log, H160, H256},
+    types::{Filter, Log, H160, H256, U256},
 };
 use anyhow::{Result, Context};
 use std::collections::HashMap;
@@ -114,6 +114,7 @@ impl AaveProvider {
     pub async fn watch_aave_events(
         &self,
         aave_pool_address: H160,
+        tx: mpsc::Sender<crate::events::event::Event>,
     ) -> Result<()> {
         tracing::info!(
             "Starting Aave event watcher for pool: {:?} (interval={}s)",
@@ -125,8 +126,8 @@ impl AaveProvider {
         // Supply(address indexed reserve, address user, address indexed onBehalfOf, uint256 amount, uint16 indexed referralCode)
         let supply_signature = "Supply(address,address,address,uint256,uint16)";
 
-        // Borrow(address indexed reserve, address user, address indexed onBehalfOf, uint256 amount, uint256 borrowRate, uint16 indexed referralCode)
-        let borrow_signature = "Borrow(address,address,address,uint256,uint256,uint16)";
+        // Borrow(address indexed reserve, address user, address indexed onBehalfOf, uint256 amount, uint8 interestRateMode, uint256 borrowRate, uint16 indexed referralCode)
+        let borrow_signature = "Borrow(address,address,address,uint256,uint8,uint256,uint16)";
         
         // Withdraw(address indexed reserve, address indexed user, address indexed to, uint256 amount)
         let withdraw_signature = "Withdraw(address,address,address,uint256)";
@@ -157,37 +158,48 @@ impl AaveProvider {
             }
 
             // Query logs từ last_block+1 đến current_block
-            let filter = Filter::new()
-                .address(aave_pool_address)
-                .from_block(last_block + 1)
-                .to_block(current_block)
-                .topic0(vec![
-                    ethers::utils::keccak256(supply_signature.as_bytes()),
-                    ethers::utils::keccak256(borrow_signature.as_bytes()),
-                    ethers::utils::keccak256(withdraw_signature.as_bytes()),
-                    ethers::utils::keccak256(repay_signature.as_bytes()),
-                    ethers::utils::keccak256(liquidation_signature.as_bytes()),
-                ]);
+            // Alchemy free tier giới hạn eth_getLogs chỉ 10 block range, nên split thành multiple queries
+            let mut query_from = last_block + 1;
+            let max_range = 10u64;
 
-            match self.provider.get_logs(&filter).await {
-                Ok(logs) => {
-                    tracing::info!("Found {} Aave events in blocks {}-{}", logs.len(), last_block + 1, current_block);
-                    
-                    for log in logs {
-                        self.process_aave_log(log).await;
+            while query_from <= current_block {
+                let query_to = std::cmp::min(query_from + max_range - 1, current_block);
+                
+                let filter = Filter::new()
+                    .from_block(query_from)
+                    .to_block(query_to)
+                    .topic0(vec![
+                        ethers::utils::keccak256(supply_signature.as_bytes()),
+                        ethers::utils::keccak256(borrow_signature.as_bytes()),
+                        ethers::utils::keccak256(withdraw_signature.as_bytes()),
+                        ethers::utils::keccak256(repay_signature.as_bytes()),
+                        ethers::utils::keccak256(liquidation_signature.as_bytes()),
+                    ]);
+
+                match self.provider.get_logs(&filter).await {
+                    Ok(logs) => {
+                        if !logs.is_empty() {
+                            tracing::info!("Found {} Aave events in blocks {}-{}", logs.len(), query_from, query_to);
+                        }
+                        
+                        for log in logs {
+                            self.process_aave_log(log, tx.clone()).await;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to fetch logs (blocks {}-{}): {:?}", query_from, query_to, e);
                     }
                 }
-                Err(e) => {
-                    tracing::error!("Failed to fetch logs: {:?}", e);
-                }
+                
+                query_from = query_to + 1;
             }
-
+            
             last_block = current_block;
         }
     }
 
     /// Xử lý log từ Aave contract để ghi nhận hoạt động on-chain
-    async fn process_aave_log(&self, log: Log) {
+    async fn process_aave_log(&self, log: Log, tx: mpsc::Sender<crate::events::event::Event>) {
         // Parse topics để xác định event type
         if log.topics.is_empty() {
             return;
@@ -197,7 +209,7 @@ impl AaveProvider {
         
         // So sánh với event signatures
         let supply_sig = ethers::utils::keccak256("Supply(address,address,address,uint256,uint16)".as_bytes());
-        let borrow_sig = ethers::utils::keccak256("Borrow(address,address,address,uint256,uint256,uint16)".as_bytes());
+        let borrow_sig = ethers::utils::keccak256("Borrow(address,address,address,uint256,uint8,uint256,uint16)".as_bytes());
         let withdraw_sig = ethers::utils::keccak256("Withdraw(address,address,address,uint256)".as_bytes());
         let repay_sig = ethers::utils::keccak256("Repay(address,address,address,uint256,bool)".as_bytes());
         let liquidation_sig = ethers::utils::keccak256("LiquidationCall(address,address,address,uint256,uint256,address,bool)".as_bytes());
@@ -219,22 +231,64 @@ impl AaveProvider {
         tracing::info!("📢 Detected {} event at block {:?}", event_name, log.block_number);
 
         if let Some(user_address) = extract_user_from_topics(event_sig, &log.topics) {
-            let affected_assets = self.extract_affected_assets(event_sig, &log.topics);
+            // Try to get asset ID from mapping, fallback to hex address if not found
+            let asset_id_or_fallback = self.lookup_asset_from_topic(log.topics.get(1))
+                .or_else(|| {
+                    // Fallback: use hex address if not found in mapping
+                    log.topics.get(1)
+                        .map(|t| {
+                            let addr = H160::from_slice(&t.as_bytes()[12..]);
+                            tracing::warn!("Asset {} not in mapping, using fallback address", addr);
+                            format!("{:?}", addr)
+                        })
+                });
 
-            if affected_assets.is_empty() {
-                tracing::debug!(
-                    "No reserve->asset mapping found for {} event at block {:?}",
-                    event_name,
-                    log.block_number
-                );
+            if let Some(asset_id) = asset_id_or_fallback {
+                let amount = extract_event_amount(event_sig, &log.data.0)
+                    .map(|raw| normalize_amount(raw, &asset_id))
+                    .unwrap_or(0.0);
+
+                let event_to_send = if event_sig == H256::from(supply_sig) {
+                    Some(crate::events::event::Event::UserDeposit {
+                        user_id: user_address.clone(),
+                        asset_id,
+                        amount,
+                    })
+                } else if event_sig == H256::from(borrow_sig) {
+                    tracing::debug!("Preparing UserBorrow event: user={} asset={} amount={}", user_address, &asset_id, amount);
+                    Some(crate::events::event::Event::UserBorrow {
+                        user_id: user_address.clone(),
+                        asset_id: asset_id.clone(),
+                        amount,
+                    })
+                } else if event_sig == H256::from(withdraw_sig) {
+                    tracing::debug!("Preparing UserWithdraw event: user={} asset={} amount={}", user_address, &asset_id, amount);
+                    Some(crate::events::event::Event::UserWithdraw {
+                        user_id: user_address.clone(),
+                        asset_id: asset_id.clone(),
+                        amount,
+                    })
+                } else if event_sig == H256::from(repay_sig) {
+                    tracing::debug!("Preparing UserRepay event: user={} asset={} amount={}", user_address, &asset_id, amount);
+                    Some(crate::events::event::Event::UserRepay {
+                        user_id: user_address.clone(),
+                        asset_id: asset_id.clone(),
+                        amount,
+                    })
+                } else {
+                    None
+                };
+
+                if let Some(event) = event_to_send {
+                    if let Err(e) = tx.send(event).await {
+                        tracing::error!("Failed to send user event from Aave watcher: {:?}", e);
+                    }
+                }
+            } else {
+                tracing::warn!("Could not determine asset_id for {} event", event_name);
             }
-
-            tracing::debug!(
-                "Aave {} user={} assets={:?}",
-                event_name,
-                user_address,
-                affected_assets
-            );
+        } else {
+            tracing::warn!("Could not extract user_address for {} event", event_name);
         }
     }
 
@@ -292,6 +346,52 @@ fn extract_user_from_topics(event_sig: H256, topics: &[H256]) -> Option<String> 
     user_topic.map(|t| format!("{:?}", H160::from_slice(&t.as_bytes()[12..])))
 }
 
+fn extract_event_amount(event_sig: H256, data: &[u8]) -> Option<U256> {
+    let supply_sig = H256::from(ethers::utils::keccak256("Supply(address,address,address,uint256,uint16)".as_bytes()));
+    let borrow_sig = H256::from(ethers::utils::keccak256("Borrow(address,address,address,uint256,uint8,uint256,uint16)".as_bytes()));
+    let withdraw_sig = H256::from(ethers::utils::keccak256("Withdraw(address,address,address,uint256)".as_bytes()));
+    let repay_sig = H256::from(ethers::utils::keccak256("Repay(address,address,address,uint256,bool)".as_bytes()));
+
+    let word_index = if event_sig == supply_sig || event_sig == borrow_sig {
+        // Supply/Borrow have `user` as first non-indexed argument, then `amount`.
+        1
+    } else if event_sig == withdraw_sig || event_sig == repay_sig {
+        // Withdraw/Repay expose `amount` as first non-indexed argument.
+        0
+    } else {
+        return None;
+    };
+
+    decode_u256_word(data, word_index)
+}
+
+fn decode_u256_word(data: &[u8], word_index: usize) -> Option<U256> {
+    let start = word_index.checked_mul(32)?;
+    let end = start.checked_add(32)?;
+    if end > data.len() {
+        return None;
+    }
+
+    Some(U256::from_big_endian(&data[start..end]))
+}
+
+fn normalize_amount(raw_amount: U256, asset_id: &str) -> f64 {
+    let decimals = asset_decimals(asset_id) as i32;
+    let raw_f64 = raw_amount.to_string().parse::<f64>().unwrap_or(0.0);
+    if raw_f64 <= 0.0 {
+        return 0.0;
+    }
+
+    raw_f64 / 10f64.powi(decimals)
+}
+
+fn asset_decimals(asset_id: &str) -> u32 {
+    match asset_id {
+        "USDC" | "USDT" => 6,
+        _ => 18,
+    }
+}
+
 fn load_reserve_asset_map() -> HashMap<H160, String> {
     let mut map = default_reserve_asset_map();
 
@@ -333,6 +433,57 @@ fn default_reserve_asset_map() -> HashMap<H160, String> {
     }
 
     map
+}
+
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+    use ethers::abi::{encode, Token};
+
+    fn sig(signature: &str) -> H256 {
+        H256::from(ethers::utils::keccak256(signature.as_bytes()))
+    }
+
+    #[test]
+    fn extract_amount_from_supply_payload_uses_second_word() {
+        let data = encode(&[
+            Token::Address(H160::from_low_u64_be(1)),
+            Token::Uint(U256::from(123_456_789u64)),
+            Token::Uint(U256::from(42u64)),
+        ]);
+
+        let amount = extract_event_amount(
+            sig("Supply(address,address,address,uint256,uint16)"),
+            &data,
+        )
+        .expect("amount should decode");
+
+        assert_eq!(amount, U256::from(123_456_789u64));
+    }
+
+    #[test]
+    fn extract_amount_from_withdraw_payload_uses_first_word() {
+        let data = encode(&[
+            Token::Uint(U256::from(55_000_000u64)),
+        ]);
+
+        let amount = extract_event_amount(
+            sig("Withdraw(address,address,address,uint256)"),
+            &data,
+        )
+        .expect("amount should decode");
+
+        assert_eq!(amount, U256::from(55_000_000u64));
+    }
+
+    #[test]
+    fn normalize_amount_respects_asset_decimals() {
+        let usdc = normalize_amount(U256::from(1_500_000u64), "USDC");
+        let weth = normalize_amount(U256::from_dec_str("1500000000000000000").unwrap(), "WETH");
+
+        assert!((usdc - 1.5).abs() < 1e-12);
+        assert!((weth - 1.5).abs() < 1e-12);
+    }
 }
 
 #[cfg(test)]
