@@ -94,7 +94,7 @@ pub async fn bootstrap_onchain_state(
                 symbol: symbol.to_string(),
                 decimals,
                 ltv: 0.80,
-                liquidation_threshold: 0.85,
+                liquidation_threshold: default_liquidation_threshold(symbol, chain_id),
                 price_in_eth,
             },
         );
@@ -110,7 +110,7 @@ pub async fn bootstrap_onchain_state(
                 symbol: "ETH".to_string(),
                 decimals: 18,
                 ltv: 0.80,
-                liquidation_threshold: 0.85,
+                liquidation_threshold: default_liquidation_threshold("ETH", chain_id),
                 price_in_eth: 1.0,
             },
         );
@@ -122,7 +122,7 @@ pub async fn bootstrap_onchain_state(
 
     for user_addr in bootstrap_users {
         let onchain = pool.get_user_account_data(user_addr).call().await;
-        let Ok((total_collateral_base, total_debt_base, _available, _lt, _ltv, hf_raw)) = onchain else {
+        let Ok((total_collateral_base, total_debt_base, _available, current_lt_bps, _ltv, hf_raw)) = onchain else {
             tracing::warn!("Skip bootstrap user {:?}: cannot read account data", user_addr);
             continue;
         };
@@ -130,6 +130,17 @@ pub async fn bootstrap_onchain_state(
         let collateral_usd = u256_to_f64(total_collateral_base) / 1e8;
         let debt_usd = u256_to_f64(total_debt_base) / 1e8;
         let hf = u256_to_f64(hf_raw) / 1e18;
+        let current_lt = (u256_to_f64(current_lt_bps) / 10_000.0).clamp(0.0, 1.0);
+
+        // Keep local risk model aligned with Aave account-level liquidation threshold.
+        if current_lt > 0.0 {
+            if let Some(mut weth) = engine.assets.get_mut("WETH") {
+                weth.liquidation_threshold = current_lt;
+            }
+            if let Some(mut eth) = engine.assets.get_mut("ETH") {
+                eth.liquidation_threshold = current_lt;
+            }
+        }
 
         let user_id = format!("{:?}", user_addr);
         let mut user = User::new(user_id.clone());
@@ -310,5 +321,13 @@ fn fallback_price_usd(symbol: &str, eth_price_usd: f64) -> f64 {
         "LINK" => 10.0,
         "AAVE" => 100.0,
         _ => 1.0,
+    }
+}
+
+fn default_liquidation_threshold(symbol: &str, _chain_id: u64) -> f64 {
+    match symbol {
+        // Aave V3 WETH reserve threshold used in local scenario scripts.
+        "WETH" | "ETH" => 0.83,
+        _ => 0.85,
     }
 }
