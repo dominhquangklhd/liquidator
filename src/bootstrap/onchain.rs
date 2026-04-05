@@ -1,10 +1,13 @@
-use std::collections::HashMap;
+use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use anyhow::Result;
 use ethers::contract::abigen;
 use ethers::providers::{Http, Provider};
 use ethers::types::{Address, H160, U256};
+use reqwest::Client;
+use serde_json::{json, Value};
 
 use crate::data::asset::Asset;
 use crate::data::user::User;
@@ -39,9 +42,31 @@ pub async fn bootstrap_onchain_state(
     aave_oracle_address: H160,
     risk_config: &RiskEngineConfig,
 ) -> Result<()> {
-    let bootstrap_users = parse_bootstrap_users();
+    // Prefer Aave subgraph top users (HF <= 2), then fallback to DB/env.
+    let subgraph_users = fetch_top_users_from_subgraph().await.unwrap_or_default();
+    let bootstrap_users: Vec<Address> = if !subgraph_users.is_empty() {
+        tracing::info!(
+            "Bootstrap candidates loaded from subgraph: {} users",
+            subgraph_users.len()
+        );
+        subgraph_users
+    } else {
+        let db_users = storage.load_all_user_addresses().await.unwrap_or_default();
+        let env_users = parse_bootstrap_users_from_env();
+
+        let mut user_set = HashSet::new();
+        user_set.extend(db_users);
+        user_set.extend(env_users);
+
+        let users: Vec<Address> = user_set.into_iter().collect();
+        tracing::warn!(
+            "Subgraph returned no users, fallback to DB+env candidates: {} users",
+            users.len()
+        );
+        users
+    };
     if bootstrap_users.is_empty() {
-        tracing::info!("No BOOTSTRAP_USERS configured, skip on-chain bootstrap");
+        tracing::info!("No bootstrap users available, skip on-chain bootstrap");
         return Ok(());
     }
 
@@ -118,7 +143,7 @@ pub async fn bootstrap_onchain_state(
     }
 
     let pool = BootstrapAavePool::new(aave_pool_address, Arc::clone(&rpc));
-    let mut users_loaded = 0usize;
+    let mut candidates: Vec<(String, User, LiquidationTarget)> = Vec::new();
 
     for user_addr in bootstrap_users {
         let onchain = pool.get_user_account_data(user_addr).call().await;
@@ -148,25 +173,14 @@ pub async fn bootstrap_onchain_state(
         if collateral_usd > 0.0 && eth_price_usd > 0.0 {
             user.collateral
                 .insert("WETH".to_string(), collateral_usd / eth_price_usd);
-            engine
-                .registry
-                .add_user_to_asset("WETH".to_string(), user_id.clone());
-            // Also track ETH so oracle ETH updates can trigger recalculation.
-            engine
-                .registry
-                .add_user_to_asset("ETH".to_string(), user_id.clone());
         }
 
         if debt_usd > 0.0 {
             user.debt.insert("USDC".to_string(), debt_usd);
-            engine
-                .registry
-                .add_user_to_asset("USDC".to_string(), user_id.clone());
         }
 
         user.health_factor = hf;
         user.risk_bucket = RiskBucket::from_hf(hf);
-        engine.users.insert(user_id.clone(), user);
 
         let ltv = if collateral_usd > 0.0 {
             debt_usd / collateral_usd
@@ -190,7 +204,7 @@ pub async fn bootstrap_onchain_state(
         }
 
         let target = LiquidationTarget {
-            user_address: user_id,
+            user_address: user_id.clone(),
             health_factor: hf,
             total_collateral_usd: collateral_usd,
             total_debt_usd: debt_usd,
@@ -203,23 +217,60 @@ pub async fn bootstrap_onchain_state(
             last_updated: chrono::Utc::now().timestamp(),
         };
 
-        if let Err(e) = storage.update_user_hf(target).await {
-            tracing::warn!("Failed to write bootstrap target to storage: {:?}", e);
+        if hf <= 2.0 {
+            candidates.push((user_id, user, target));
+        }
+    }
+
+    candidates.sort_by(|a, b| {
+        a.2.health_factor
+            .partial_cmp(&b.2.health_factor)
+            .unwrap_or(Ordering::Equal)
+    });
+
+    if candidates.len() > 100 {
+        candidates.truncate(100);
+    }
+
+    let mut persisted_targets = Vec::with_capacity(candidates.len());
+    for (user_id, user, target) in candidates {
+        if user.collateral.contains_key("WETH") {
+            engine
+                .registry
+                .add_user_to_asset("WETH".to_string(), user_id.clone());
+            // Also track ETH so oracle ETH updates can trigger recalculation.
+            engine
+                .registry
+                .add_user_to_asset("ETH".to_string(), user_id.clone());
+        }
+        if user.debt.contains_key("USDC") {
+            engine
+                .registry
+                .add_user_to_asset("USDC".to_string(), user_id.clone());
         }
 
-        users_loaded += 1;
+        engine.users.insert(user_id, user);
+
+        if let Err(e) = storage.update_user_hf(target.clone()).await {
+            tracing::warn!("Failed to update bootstrap target in hot cache: {:?}", e);
+        }
+        persisted_targets.push(target);
+    }
+
+    if let Err(e) = storage.persist_targets_to_db(&persisted_targets).await {
+        tracing::warn!("Failed to persist bootstrap targets to SQLite: {:?}", e);
     }
 
     tracing::info!(
-        "On-chain bootstrap complete: {} assets, {} users loaded",
+        "On-chain bootstrap complete: {} assets, {} users loaded (HF <= 2.0, top 100)",
         assets_loaded,
-        users_loaded
+        persisted_targets.len()
     );
 
     Ok(())
 }
 
-fn parse_bootstrap_users() -> Vec<Address> {
+fn parse_bootstrap_users_from_env() -> Vec<Address> {
     let from_env = std::env::var("BOOTSTRAP_USERS")
         .ok()
         .map(|raw| {
@@ -241,6 +292,124 @@ fn parse_bootstrap_users() -> Vec<Address> {
     } else {
         from_env
     }
+}
+
+async fn fetch_top_users_from_subgraph() -> Result<Vec<Address>> {
+    let endpoint = std::env::var("AAVE_SUBGRAPH_URL")
+        .unwrap_or_else(|_| "https://api.thegraph.com/subgraphs/name/messari/aave-v3-ethereum".to_string());
+    let client = Client::new();
+
+    // Try common schema variants used by Aave/community subgraphs.
+    let queries = [
+        r#"query BootstrapUsers {
+            users(
+                where: { healthFactor_lte: \"2\" }
+                orderBy: healthFactor
+                orderDirection: asc
+                first: 100
+            ) {
+                id
+            }
+        }"#,
+        r#"query BootstrapUsers {
+            accounts(
+                where: { healthFactor_lte: \"2\" }
+                orderBy: healthFactor
+                orderDirection: asc
+                first: 100
+            ) {
+                id
+            }
+        }"#,
+        r#"query BootstrapUsers {
+            positions(
+                where: { healthFactor_lte: \"2\" }
+                orderBy: healthFactor
+                orderDirection: asc
+                first: 100
+            ) {
+                user {
+                    id
+                }
+            }
+        }"#,
+    ];
+
+    for query in queries {
+        let body = json!({ "query": query });
+        let resp = client.post(&endpoint).json(&body).send().await?;
+        if !resp.status().is_success() {
+            continue;
+        }
+
+        let value: Value = resp.json().await?;
+        if let Some(errors) = value.get("errors") {
+            tracing::debug!("Subgraph query returned errors: {:?}", errors);
+            continue;
+        }
+
+        let mut out = Vec::new();
+        if let Some(items) = value
+            .get("data")
+            .and_then(|d| d.get("users"))
+            .and_then(|v| v.as_array())
+        {
+            for item in items {
+                if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
+                    if let Ok(addr) = id.parse::<Address>() {
+                        out.push(addr);
+                    }
+                }
+            }
+        }
+
+        if out.is_empty() {
+            if let Some(items) = value
+                .get("data")
+                .and_then(|d| d.get("accounts"))
+                .and_then(|v| v.as_array())
+            {
+                for item in items {
+                    if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
+                        if let Ok(addr) = id.parse::<Address>() {
+                            out.push(addr);
+                        }
+                    }
+                }
+            }
+        }
+
+        if out.is_empty() {
+            if let Some(items) = value
+                .get("data")
+                .and_then(|d| d.get("positions"))
+                .and_then(|v| v.as_array())
+            {
+                for item in items {
+                    if let Some(id) = item
+                        .get("user")
+                        .and_then(|u| u.get("id"))
+                        .and_then(|v| v.as_str())
+                    {
+                        if let Ok(addr) = id.parse::<Address>() {
+                            out.push(addr);
+                        }
+                    }
+                }
+            }
+        }
+
+        if !out.is_empty() {
+            out.sort_unstable();
+            out.dedup();
+            if out.len() > 100 {
+                out.truncate(100);
+            }
+            return Ok(out);
+        }
+    }
+
+    Ok(Vec::new())
 }
 
 fn reserve_catalog_from_env(chain_id: u64) -> HashMap<String, Address> {

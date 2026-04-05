@@ -200,6 +200,19 @@ impl HybridStorage {
     ) -> Result<Vec<LiquidationEvent>> {
         self.cold_storage.get_liquidations(since_hours).await
     }
+
+    /// Persist a full batch of targets directly to SQLite.
+    ///
+    /// This is used by bootstrap flows that need deterministic DB state
+    /// without waiting for background sync.
+    pub async fn persist_targets_to_db(&self, targets: &[LiquidationTarget]) -> Result<()> {
+        self.cold_storage.bulk_upsert_targets(targets).await
+    }
+    
+    /// Load all user addresses from database (for bootstrap)
+    pub async fn load_all_user_addresses(&self) -> Result<Vec<ethers::types::Address>> {
+        self.cold_storage.load_all_user_addresses().await
+    }
     
     // ============================================================================
     // SYNC: Background synchronization

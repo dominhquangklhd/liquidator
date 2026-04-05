@@ -253,6 +253,28 @@ impl ColdStorage {
         Ok(row.0)
     }
     
+    /// Load all user addresses from DB (for bootstrap)
+    pub async fn load_all_user_addresses(&self) -> Result<Vec<ethers::types::Address>> {
+        let rows = sqlx::query_as::<_, (String,)>(
+            "SELECT user_address FROM users ORDER BY last_updated DESC"
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        
+        Ok(rows.into_iter()
+            .filter_map(|(addr_str,)| {
+                // Parse address from stored format (either 0x... or other format)
+                match addr_str.parse::<ethers::types::Address>() {
+                    Ok(addr) => Some(addr),
+                    Err(_) => {
+                        tracing::warn!("Failed to parse user address from DB: {}", addr_str);
+                        None
+                    }
+                }
+            })
+            .collect())
+    }
+    
     // ============================================================================
     // HISTORICAL DATA
     // ============================================================================
