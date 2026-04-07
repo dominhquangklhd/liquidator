@@ -96,7 +96,26 @@ function Invoke-CastRpc {
     param([string]$CastArgs)
     $cmd = "cast rpc $CastArgs --rpc-url $RpcUrl"
     $result = Invoke-Expression $cmd 2>&1
-    return ($result | Out-String).Trim()
+    $output = ($result | Out-String).Trim()
+
+    if ($LASTEXITCODE -eq 0) {
+        return $output
+    }
+
+    # Hardhat compatibility: retry with hardhat_* namespace if script used anvil_*
+    if ($CastArgs -match '^anvil_') {
+        $fallbackArgs = $CastArgs -replace '^anvil_', 'hardhat_'
+        $fallbackCmd = "cast rpc $fallbackArgs --rpc-url $RpcUrl"
+        $fallbackResult = Invoke-Expression $fallbackCmd 2>&1
+        $fallbackOutput = ($fallbackResult | Out-String).Trim()
+
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "  [i] RPC fallback: $CastArgs -> $fallbackArgs" -ForegroundColor DarkGray
+            return $fallbackOutput
+        }
+    }
+
+    return $output
 }
 
 function Write-Step {

@@ -19,3 +19,13 @@
 
 # Ignore documentation files
 /docs
+
+# Node dependencies
+/node_modules/
+/fork-blockchain/node_modules/
+
+# Hardhat fork outputs
+/fork-blockchain/artifacts/
+/fork-blockchain/cache/
+/fork-blockchain/dist/
+/fork-blockchain/coverage/

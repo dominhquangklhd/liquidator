@@ -16,7 +16,12 @@ use crate::risk::engine::{RiskEngine, RiskEngineConfig};
 use crate::events::event::Event;
 use crate::provider::AaveProvider;
 use crate::oracle::{OracleManager, OracleConfig, OracleWorkerConfig};
-use crate::oracle::worker::{oracle_price_worker, oracle_stats_worker, oracle_health_worker};
+use crate::oracle::worker::{
+    oracle_price_worker,
+    oracle_stats_worker,
+    oracle_health_worker,
+    oracle_chainlink_event_worker,
+};
 use crate::profit::{ProfitCalculator, ProfitConfig, GasEstimator};
 use crate::strategy::{StrategyDecider, StrategyConfig};
 use crate::storage::HybridStorage;
@@ -207,12 +212,38 @@ async fn main() {
     // - Liquidation (thanh lý)
     let provider_for_events = Arc::clone(&provider);
     let tx_for_events = tx.clone();
+    let aave_ws_url = std::env::var("AAVE_WS_URL")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let aave_ws_reconnect_delay_secs = env_u64("AAVE_WS_RECONNECT_DELAY_SECS", 3);
     tokio::spawn(async move {
-        if let Err(e) = provider_for_events
+        if let Some(ws_url) = aave_ws_url {
+            tracing::info!("Aave event watcher started in WS mode");
+
+            loop {
+                match provider_for_events
+                    .watch_aave_events_ws(&ws_url, aave_pool_address, tx_for_events.clone())
+                    .await
+                {
+                    Ok(_) => tracing::warn!("Aave WS watcher exited unexpectedly"),
+                    Err(e) => tracing::error!("Aave WS watcher error: {:?}", e),
+                }
+
+                tracing::warn!(
+                    "Reconnecting Aave WS in {}s...",
+                    aave_ws_reconnect_delay_secs
+                );
+                tokio::time::sleep(tokio::time::Duration::from_secs(
+                    aave_ws_reconnect_delay_secs,
+                ))
+                .await;
+            }
+        } else if let Err(e) = provider_for_events
             .watch_aave_events(aave_pool_address, tx_for_events)
             .await
         {
-            tracing::error!("Aave event watcher error: {:?}", e);
+            tracing::error!("Aave polling event watcher error: {:?}", e);
         }
     });
 
@@ -240,6 +271,12 @@ async fn main() {
                 poll_interval_ms: oracle_config.poll_interval_ms,
                 stats_interval_secs: env_u64("ORACLE_STATS_INTERVAL_SECS", 60),
                 health_check_interval_secs: env_u64("ORACLE_HEALTH_INTERVAL_SECS", 300),
+                chainlink_event_poll_interval_secs: env_u64("ORACLE_EVENT_POLL_INTERVAL_SECS", 3),
+                chainlink_ws_url: std::env::var("ORACLE_WS_URL")
+                    .ok()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty()),
+                chainlink_ws_reconnect_delay_secs: env_u64("ORACLE_WS_RECONNECT_DELAY_SECS", 3),
             };
             
             let price_worker_config = worker_config.clone();
@@ -259,6 +296,13 @@ async fn main() {
             let health_worker_config = worker_config.clone();
             tokio::spawn(async move {
                 oracle_health_worker(oracle_for_health, health_worker_config).await;
+            });
+
+            // 6.4 Oracle Chainlink Event Worker — WS primary, polling fallback
+            let oracle_for_events = Arc::clone(&oracle);
+            let event_worker_config = worker_config.clone();
+            tokio::spawn(async move {
+                oracle_chainlink_event_worker(oracle_for_events, event_worker_config).await;
             });
             
             tracing::info!("✓ Oracle workers spawned ({} feeds)", oracle.feed_count());

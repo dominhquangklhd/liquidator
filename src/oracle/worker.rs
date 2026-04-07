@@ -19,6 +19,15 @@ pub struct OracleWorkerConfig {
     
     /// Interval kiểm tra health (seconds)
     pub health_check_interval_secs: u64,
+
+    /// Interval quét Chainlink AnswerUpdated logs (seconds)
+    pub chainlink_event_poll_interval_secs: u64,
+
+    /// Optional WS endpoint cho Chainlink event subscription (push-based)
+    pub chainlink_ws_url: Option<String>,
+
+    /// Delay trước khi reconnect WS khi stream lỗi (seconds)
+    pub chainlink_ws_reconnect_delay_secs: u64,
 }
 
 impl Default for OracleWorkerConfig {
@@ -27,6 +36,47 @@ impl Default for OracleWorkerConfig {
             poll_interval_ms: 3000,
             stats_interval_secs: 60,
             health_check_interval_secs: 300, // 5 minutes
+            chainlink_event_poll_interval_secs: 3,
+            chainlink_ws_url: None,
+            chainlink_ws_reconnect_delay_secs: 3,
+        }
+    }
+}
+
+/// Worker Chainlink event: ưu tiên WS subscription, fallback sang polling logs.
+pub async fn oracle_chainlink_event_worker(
+    oracle: Arc<OracleManager>,
+    config: OracleWorkerConfig,
+) {
+    if let Some(ws_url) = config.chainlink_ws_url.clone() {
+        tracing::info!("Oracle Chainlink event worker started in WS mode");
+
+        loop {
+            match oracle.watch_chainlink_events_ws(&ws_url).await {
+                Ok(_) => tracing::warn!("Oracle Chainlink WS watcher exited unexpectedly"),
+                Err(e) => tracing::error!("Oracle Chainlink WS watcher error: {:?}", e),
+            }
+
+            tracing::warn!(
+                "Reconnecting Chainlink WS in {}s...",
+                config.chainlink_ws_reconnect_delay_secs
+            );
+            tokio::time::sleep(tokio::time::Duration::from_secs(
+                config.chainlink_ws_reconnect_delay_secs,
+            ))
+            .await;
+        }
+    } else {
+        tracing::info!(
+            "Oracle Chainlink event worker started in polling fallback mode (interval: {}s)",
+            config.chainlink_event_poll_interval_secs
+        );
+
+        if let Err(e) = oracle
+            .watch_chainlink_events(config.chainlink_event_poll_interval_secs)
+            .await
+        {
+            tracing::error!("Oracle Chainlink polling watcher stopped: {:?}", e);
         }
     }
 }

@@ -19,4 +19,10 @@ pub use config::{OracleConfig, PriceFeedConfig};
 pub use types::{PriceData, PriceFeedInfo, FeedStatus, OracleStats};
 pub use chainlink::ChainlinkFeed;
 pub use manager::OracleManager;
-pub use worker::{OracleWorkerConfig, oracle_price_worker, oracle_stats_worker, oracle_health_worker};
+pub use worker::{
+	OracleWorkerConfig,
+	oracle_price_worker,
+	oracle_stats_worker,
+	oracle_health_worker,
+	oracle_chainlink_event_worker,
+};

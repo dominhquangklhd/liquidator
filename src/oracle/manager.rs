@@ -8,8 +8,10 @@
 // - Fallback khi feed lỗi (dùng cached price)
 // - Thống kê hoạt động
 
-use ethers::providers::{Provider, Http};
-use anyhow::Result;
+use ethers::providers::{Provider, Http, Ws, Middleware};
+use ethers::types::{Filter, H256, Log};
+use anyhow::{Result, bail};
+use futures::StreamExt;
 use std::sync::Arc;
 use std::collections::HashMap;
 use tokio::sync::RwLock;
@@ -210,6 +212,131 @@ impl OracleManager {
         }
         
         Ok(updates_emitted)
+    }
+
+    /// Poll Chainlink AnswerUpdated logs theo interval (fallback mode)
+    pub async fn watch_chainlink_events(&self, interval_secs: u64) -> Result<()> {
+        let interval_secs = interval_secs.max(1);
+        tracing::info!(
+            "Starting Chainlink event polling watcher (interval={}s)",
+            interval_secs
+        );
+
+        let feed_addresses: Vec<_> = self.feeds.values().map(|feed| feed.feed_address()).collect();
+        if feed_addresses.is_empty() {
+            tracing::warn!("No Chainlink feeds configured, polling watcher will exit");
+            return Ok(());
+        }
+
+        let answer_updated_sig = H256::from(ethers::utils::keccak256(
+            "AnswerUpdated(int256,uint256,uint256)".as_bytes(),
+        ));
+
+        let mut last_block = self.provider.get_block_number().await?.as_u64();
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(interval_secs));
+
+        loop {
+            interval.tick().await;
+
+            let current_block = match self.provider.get_block_number().await {
+                Ok(block) => block.as_u64(),
+                Err(e) => {
+                    tracing::error!("Failed to fetch latest block for Chainlink polling: {:?}", e);
+                    continue;
+                }
+            };
+
+            if current_block <= last_block {
+                continue;
+            }
+
+            let mut query_from = last_block + 1;
+            let max_range = 10u64;
+
+            while query_from <= current_block {
+                let query_to = std::cmp::min(query_from + max_range - 1, current_block);
+                let filter = Filter::new()
+                    .address(feed_addresses.clone())
+                    .from_block(query_from)
+                    .to_block(query_to)
+                    .topic0(answer_updated_sig);
+
+                match self.provider.get_logs(&filter).await {
+                    Ok(logs) => {
+                        if !logs.is_empty() {
+                            tracing::debug!(
+                                "Found {} Chainlink AnswerUpdated logs in blocks {}-{}",
+                                logs.len(),
+                                query_from,
+                                query_to
+                            );
+                        }
+
+                        for log in logs {
+                            if let Err(e) = self.process_chainlink_answer_updated_log(log).await {
+                                tracing::error!("Failed to process Chainlink log in polling mode: {:?}", e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to fetch Chainlink logs (blocks {}-{}): {:?}",
+                            query_from,
+                            query_to,
+                            e
+                        );
+                    }
+                }
+
+                query_from = query_to + 1;
+            }
+
+            last_block = current_block;
+        }
+    }
+
+    /// Subscribe Chainlink AnswerUpdated logs qua WebSocket (primary mode)
+    pub async fn watch_chainlink_events_ws(&self, ws_url: &str) -> Result<()> {
+        tracing::info!("Starting Chainlink event WS watcher at {}", ws_url);
+
+        let feed_addresses: Vec<_> = self.feeds.values().map(|feed| feed.feed_address()).collect();
+        if feed_addresses.is_empty() {
+            tracing::warn!("No Chainlink feeds configured, WS watcher will exit");
+            return Ok(());
+        }
+
+        let ws = Ws::connect(ws_url).await?;
+        let provider_ws = Provider::new(ws);
+        let answer_updated_sig = H256::from(ethers::utils::keccak256(
+            "AnswerUpdated(int256,uint256,uint256)".as_bytes(),
+        ));
+
+        let filter = Filter::new()
+            .address(feed_addresses)
+            .topic0(answer_updated_sig);
+
+        let mut stream = provider_ws.subscribe_logs(&filter).await?;
+        while let Some(log) = stream.next().await {
+            if let Err(e) = self.process_chainlink_answer_updated_log(log).await {
+                tracing::error!("Failed to process Chainlink log in WS mode: {:?}", e);
+            }
+        }
+
+        bail!("Chainlink WS log stream ended unexpectedly");
+    }
+
+    async fn process_chainlink_answer_updated_log(&self, log: Log) -> Result<()> {
+        let Some((asset_id, feed)) = self
+            .feeds
+            .iter()
+            .find(|(_, feed)| feed.feed_address() == log.address)
+        else {
+            tracing::warn!("Received Chainlink log for unknown feed address: {:?}", log.address);
+            return Ok(());
+        };
+
+        self.poll_single_feed(asset_id, feed).await?;
+        Ok(())
     }
     
     /// Poll một feed cụ thể

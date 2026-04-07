@@ -1,9 +1,10 @@
 use ethers::{
     prelude::*,
-    providers::{Provider, Http, Middleware},
+    providers::{Provider, Http, Middleware, Ws},
     types::{Filter, Log, H160, H256, U256},
 };
 use anyhow::{Result, Context};
+use futures::StreamExt;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -196,6 +197,53 @@ impl AaveProvider {
             
             last_block = current_block;
         }
+    }
+
+    /// Watch Aave events qua WebSocket subscription (push-based)
+    pub async fn watch_aave_events_ws(
+        &self,
+        ws_url: &str,
+        aave_pool_address: H160,
+        tx: mpsc::Sender<crate::events::event::Event>,
+    ) -> Result<()> {
+        tracing::info!(
+            "Starting Aave event WS watcher for pool: {:?} via {}",
+            aave_pool_address,
+            ws_url
+        );
+
+        let ws = Ws::connect(ws_url)
+            .await
+            .with_context(|| format!("Failed to connect Aave WS endpoint: {}", ws_url))?;
+        let provider_ws = Provider::new(ws);
+
+        // Aave V3 Event Signatures
+        let supply_signature = "Supply(address,address,address,uint256,uint16)";
+        let borrow_signature = "Borrow(address,address,address,uint256,uint8,uint256,uint16)";
+        let withdraw_signature = "Withdraw(address,address,address,uint256)";
+        let repay_signature = "Repay(address,address,address,uint256,bool)";
+        let liquidation_signature = "LiquidationCall(address,address,address,uint256,uint256,address,bool)";
+
+        let filter = Filter::new()
+            .address(aave_pool_address)
+            .topic0(vec![
+                ethers::utils::keccak256(supply_signature.as_bytes()),
+                ethers::utils::keccak256(borrow_signature.as_bytes()),
+                ethers::utils::keccak256(withdraw_signature.as_bytes()),
+                ethers::utils::keccak256(repay_signature.as_bytes()),
+                ethers::utils::keccak256(liquidation_signature.as_bytes()),
+            ]);
+
+        let mut stream = provider_ws
+            .subscribe_logs(&filter)
+            .await
+            .context("Failed to subscribe Aave logs via WS")?;
+
+        while let Some(log) = stream.next().await {
+            self.process_aave_log(log, tx.clone()).await;
+        }
+
+        anyhow::bail!("Aave WS log stream ended unexpectedly");
     }
 
     /// Xử lý log từ Aave contract để ghi nhận hoạt động on-chain
