@@ -14,7 +14,7 @@ Bot liquidation chuyên nghiệp cần **11 luồng (threads/tasks)** chính:
 | 6 | Stats Logger | Ghi log thống kê định kỳ | ✅ Đã triển khai |
 | 7 | Oracle Price Feeds | Theo dõi giá từ Chainlink/Pyth realtime | ✅ Đã triển khai |
 | 8 | Profit Calculator | Tính toán lợi nhuận ước tính cho mỗi cơ hội | ✅ Đã triển khai |
-| 9 | Strategy Decider | Quyết định chiến lược liquidation (Direct vs Flash Loan, priority scoring) | ✅ Đã triển khai |
+| 9 | Strategy Decider | Quyết định chiến lược liquidation (Direct vs Skip, priority scoring) | ✅ Đã triển khai |
 | 10 | Nonce Manager Sync | Đồng bộ nonce với on-chain | ✅ Đã triển khai |
 | 11 | Memory Monitor | Giám sát RAM, auto evict cache khi cần | ✅ Đã triển khai |
 
@@ -102,17 +102,17 @@ Bot liquidation chuyên nghiệp cần **11 luồng (threads/tasks)** chính:
 
 ### 10. Strategy Decider Module (`src/strategy/`)
 - [x] **StrategyConfig** (`config.rs`) - Cấu hình: wallet balance, gas limits, exposure limits, weights
-- [x] **Preset configs** - `default()`, `mainnet()` (flash loan enabled, max gas 50 gwei), `local_fork()` (flash loan disabled, max gas 500 gwei)
-- [x] **ExecutionMethod** (`types.rs`) - Enum: Direct (đủ token) / FlashLoan (thiếu token) / Skip (không khả thi)
+- [x] **Preset configs** - `default()`, `mainnet()`, `local_fork()` cho direct/skip policy
+- [x] **ExecutionMethod** (`types.rs`) - Enum: Direct (đủ token) / Skip (không khả thi)
 - [x] **StrategyDecision** - Kết quả: method, priority_score, adjusted_profit, reasoning
 - [x] **PrioritizedTarget** - Target đã xếp hạng với rank
 - [x] **ExecutionPlan** - Kế hoạch batch: danh sách targets đã sort + thống kê
 - [x] **StrategyDecider** (`decider.rs`) - Core logic quyết định chiến lược
-- [x] **Method Decision** - Decision tree: check ETH balance → check token availability → check debt size → Direct/FlashLoan/Skip
+- [x] **Method Decision** - Decision tree: check ETH balance → check token availability → check debt size → Direct/Skip
 - [x] **Priority Scoring** - Multi-factor: `w_profit × profit + w_urgency × 1/HF + w_efficiency × ROI + w_size × 1/debt` (min-max normalization)
 - [x] **Risk Management** - Circuit breaker (N failures → cooldown), exposure limits (tổng + đơn lẻ), concurrent limit
 - [x] **Wallet State** - Track ETH balance + token balances, updatable bởi external workers
-- [x] **StrategyStats** - Thống kê: total decisions, direct/flash_loan/skip counts, circuit breaker trips
+- [x] **StrategyStats** - Thống kê: total decisions, direct/skip counts, circuit breaker trips
 - [x] **13+ unit tests** - normalizer (3), method decision (4), plan creation (3), circuit breaker (2), stats (1) — all passed
 - [x] **Main integration** - Khởi tạo StrategyDecider trong main.rs, truyền vào executor_worker
 
@@ -165,7 +165,7 @@ Phase 1 (Core - Bắt buộc):
   2. ✅ Profit Calculator   ← ĐÃ TRIỂN KHAI (23 tests passed)
   
 Phase 2 (Competitive Edge):
-  3. ✅ Strategy Decider   ← ĐÃ TRIỂN KHAI (Direct vs Flash Loan + priority scoring)
+  3. ✅ Strategy Decider   ← ĐÃ TRIỂN KHAI (Direct vs Skip + priority scoring)
   4. Event Batching      ← Gom sự kiện để giảm recompute dư thừa
 
 Phase 3 (Production Ready):

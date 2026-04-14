@@ -869,6 +869,9 @@ async fn test_oracle_worker_short_run() -> Result<()> {
                 poll_interval_ms: 1000,  // Poll mỗi 1s
                 stats_interval_secs: 60,
                 health_check_interval_secs: 300,
+                chainlink_event_poll_interval_secs: 3,
+                chainlink_ws_url: None,
+                chainlink_ws_reconnect_delay_secs: 3,
             },
         ).await;
     });

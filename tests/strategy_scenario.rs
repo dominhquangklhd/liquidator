@@ -385,8 +385,7 @@ async fn test_s1_happy_path_direct_liquidation() {
     println!("  Liquidator USDC:   ${:.2}", liquidator_usdc);
 
     // -- Setup Strategy Decider với enough funds --
-    let mut config = StrategyConfig::local_fork();
-    config.flash_loan_available = true; // enable để verify nó vẫn chọn Direct
+    let config = StrategyConfig::local_fork();
     let decider = StrategyDecider::new(config);
 
     // Set wallet: đủ ETH + USDC
@@ -427,7 +426,7 @@ async fn test_s1_happy_path_direct_liquidation() {
     assert_eq!(executable.len(), 1);
     let decision = &executable[0].decision;
 
-    // Có đủ USDC → phải chọn Direct (không cần flash loan)
+    // Có đủ USDC → phải chọn Direct
     assert!(
         matches!(decision.method, ExecutionMethod::Direct { .. }),
         "Should choose Direct when wallet has enough USDC, got: {:?}",
@@ -453,12 +452,12 @@ async fn test_s1_happy_path_direct_liquidation() {
 }
 
 // ============================================================================
-// S2: Flash Loan Fallback
-// Wallet thiếu token → StrategyDecider chọn FlashLoan
+// S2: No Token Fallback
+// Wallet thiếu token → StrategyDecider chọn Skip
 // ============================================================================
 
 #[tokio::test]
-async fn test_s2_flash_loan_fallback() {
+async fn test_s2_no_token_skip() {
     let ctx = require_anvil!();
     let (collateral, debt, hf) = require_liquidatable!(ctx);
 
@@ -466,19 +465,17 @@ async fn test_s2_flash_loan_fallback() {
     let gas_gwei = read_gas_price(&ctx).await.unwrap_or(20.0);
 
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  S2: FLASH LOAN FALLBACK");
+    println!("  S2: NO TOKEN → SKIP");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!("  Borrower HF:  {:.6}", hf);
     println!("  Debt:         ${:.2}", debt);
     println!("  ETH Price:    ${:.2}", eth_price);
 
-    // -- Config: flash loan enabled, NO token balance --
-    let mut config = StrategyConfig::local_fork();
-    config.flash_loan_available = true;
-    config.flash_loan_fee_pct = 0.09; // Aave V3: 0.05-0.09%
+    // -- Config: direct/skip only, NO token balance --
+    let config = StrategyConfig::local_fork();
     let decider = StrategyDecider::new(config);
 
-    // Đủ ETH cho gas nhưng KHÔNG có USDC → phải dùng flash loan
+    // Đủ ETH cho gas nhưng KHÔNG có USDC → phải skip
     decider.update_wallet_balance(5.0).await;
     // Không gọi update_token_balance → wallet_token_balances rỗng
     decider.update_gas_price(gas_gwei).await;
@@ -496,27 +493,14 @@ async fn test_s2_flash_loan_fallback() {
     println!("  Plan: {}", plan.summary());
 
     let executable = plan.executable_targets();
-    if executable.is_empty() {
-        // Flash loan fee có thể vượt profit → Skip (hợp lệ)
-        let reason = &plan.targets[0].decision.reasoning;
-        println!("  INFO: Skipped — {}", reason);
-        assert!(
-            reason.contains("fee") || reason.contains("profit") || reason.contains("Flash"),
-            "Skip reason should mention fee or profit"
-        );
-        println!("  PASS: Correctly skipped due to flash loan fee > profit");
-    } else {
-        let decision = &executable[0].decision;
-        assert!(
-            matches!(decision.method, ExecutionMethod::FlashLoan { .. }),
-            "Should choose FlashLoan when no USDC, got: {:?}",
-            decision.method
-        );
-        println!("  Method:         {}", decision.method.label());
-        println!("  Priority:       {:.2}", decision.priority_score);
-        println!("  Profit (adj):   ${:.2}", decision.adjusted_profit_usd);
-        println!("  PASS: Flash loan strategy selected correctly");
-    }
+    assert!(executable.is_empty(), "Should skip when no USDC for direct path");
+    let reason = &plan.targets[0].decision.reasoning;
+    println!("  INFO: Skipped — {}", reason);
+    assert!(
+        reason.contains("No sufficient") || reason.contains("token") || reason.contains("Insufficient"),
+        "Skip reason should mention direct token insufficiency"
+    );
+    println!("  PASS: Correctly skipped due to missing debt token");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 }
 
@@ -1035,8 +1019,7 @@ async fn test_s_extra_full_pipeline_onchain_to_strategy() {
     println!("  Liquidator USDC:    ${:.2}", liquidator_usdc);
 
     // -- Setup Strategy --
-    let mut config = StrategyConfig::local_fork();
-    config.flash_loan_available = true;
+    let config = StrategyConfig::local_fork();
     let decider = StrategyDecider::new(config.clone());
 
     decider.update_wallet_balance(10.0).await;
@@ -1097,11 +1080,8 @@ async fn test_s_extra_full_pipeline_onchain_to_strategy() {
                     );
                 } else {
                     assert!(
-                        matches!(
-                            d.method,
-                            ExecutionMethod::FlashLoan { .. } | ExecutionMethod::Skip { .. }
-                        ),
-                        "Without enough USDC, should use FlashLoan or Skip"
+                        matches!(d.method, ExecutionMethod::Skip { .. }),
+                        "Without enough USDC, should use Skip"
                     );
                 }
                 println!("  Verification:       PASS");

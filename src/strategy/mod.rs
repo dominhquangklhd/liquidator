@@ -5,7 +5,7 @@
 // ## Các thành phần:
 //
 // - **StrategyConfig** — Cấu hình (thresholds, weights, risk limits)
-// - **ExecutionMethod** — Direct | FlashLoan | Skip
+// - **ExecutionMethod** — Direct | Skip
 // - **StrategyDecision** — Quyết định cho 1 target
 // - **ExecutionPlan** — Kế hoạch cho batch targets  
 // - **StrategyDecider** — Core logic quyết định
@@ -19,10 +19,9 @@
 //   ├── Mỗi target:
 //   │   ├── Check circuit breaker
 //   │   ├── Check exposure limits
-//   │   ├── decide_method() → Direct | FlashLoan | Skip
+//   │   ├── decide_method() → Direct | Skip
 //   │   │   ├── wallet có đủ token? → Direct
-//   │   │   ├── flash loan available? → FlashLoan
-//   │   │   └── không đủ cả hai? → Skip
+//   │   │   └── không đủ điều kiện direct? → Skip
 //   │   └── calculate priority score (multi-factor)
 //   │       = w_profit × profit + w_urgency × (1/HF)
 //   │       + w_efficiency × ROI + w_size × (1/debt)

@@ -31,7 +31,6 @@ Luồng chính: **Targets → Profit Filter → Strategy Decision → Priority S
               │  ├─ Check exposure      │
               │  ├─ decide_method()     │
               │  │   ├─ Direct          │
-              │  │   ├─ FlashLoan       │
               │  │   └─ Skip            │
               │  └─ Priority score      │
               └────────────┬────────────┘
@@ -49,7 +48,7 @@ Luồng chính: **Targets → Profit Filter → Strategy Decision → Priority S
                     ExecutionPlan
                            │
                     ┌──────▼──────┐
-                    │ Executor    │ execute Direct hoặc FlashLoan
+                    │ Executor    │ execute Direct hoặc Skip
                     │ Worker      │
                     └─────────────┘
 ```
@@ -66,9 +65,9 @@ Luồng chính: **Targets → Profit Filter → Strategy Decision → Priority S
 | U2 | `test_normalizer_single` | Normalize 1 phần tử → 0.5 | ✅ Đã có |
 | U3 | `test_normalizer_inverse` | Normalize inverse (nhỏ = tốt) | ✅ Đã có |
 | U4 | `test_decide_method_direct` | Đủ ETH + token → Direct | ✅ Đã có |
-| U5 | `test_decide_method_flash_loan` | Thiếu token, flash loan available → FlashLoan | ✅ Đã có |
-| U6 | `test_decide_method_skip` | Thiếu token, no flash loan → Skip | ✅ Đã có |
-| U7 | `test_decide_method_large_debt` | Debt > threshold → FlashLoan | ✅ Đã có |
+| U5 | `test_decide_skip_no_tokens` | Thiếu token debt → Skip | ✅ Đã có |
+| U6 | `test_decide_method_skip` | Điều kiện không đạt → Skip | ✅ Đã có |
+| U7 | `test_i2_debt_too_large_skips` | Debt > threshold direct → Skip | ✅ Đã có |
 | U8 | `test_create_plan_sorts_by_priority` | Kết quả sorted DESC by priority | ✅ Đã có |
 | U9 | `test_plan_concurrent_limit` | Chỉ max N targets trong plan | ✅ Đã có |
 | U10 | `test_plan_exposure_limit` | Dừng khi tổng exposure vượt limit | ✅ Đã có |
@@ -87,7 +86,7 @@ Luồng chính: **Targets → Profit Filter → Strategy Decision → Priority S
 | U18 | `test_negative_profit_skips` | Net profit < 0 → Skip | Trung bình |
 | U19 | `test_empty_input` | Input rỗng → ExecutionPlan rỗng | Thấp |
 | U20 | `test_wallet_balance_update` | `update_wallet_balance` → reflect trong decisions | Trung bình |
-| U21 | `test_token_balance_update` | `update_token_balance` → ảnh hưởng Direct/FlashLoan | Trung bình |
+| U21 | `test_token_balance_update` | `update_token_balance` → ảnh hưởng Direct/Skip | Trung bình |
 | U22 | `test_circuit_breaker_cooldown` | Sau cooldown period → hoạt động trở lại | Cao |
 | U23 | `test_per_liquidation_exposure_limit` | Một target vượt max_single_exposure → Skip | Trung bình |
 
@@ -113,7 +112,7 @@ Test tích hợp giữa Strategy Decider với các module khác.
 | # | Scenario | Mô tả | Setup cần thiết |
 |---|----------|--------|------------------|
 | S1 | **Happy path: Direct liquidation** | Wallet đủ tiền → chọn Direct → execute thành công | Anvil + Aave fork, fund wallet với debt token |
-| S2 | **Flash loan fallback** | Wallet thiếu token → chọn FlashLoan → execute | Anvil + Aave fork, flash loan pool có liquidity |
+| S2 | **No-token fallback** | Wallet thiếu token → chọn Skip | Anvil + Aave fork |
 | S3 | **Multi-target priority** | 3 users undercollateralized, khác HF/debt → verify order | 3 user positions setup |
 | S4 | **Circuit breaker recovery** | 5 failed liquidations → breaker trips → cooldown → resume | Force failures + wait |
 | S5 | **Gas spike → Skip** | Tăng gas price trên Anvil → strategy chọn Skip | `anvil_setNextBlockBaseFeePerGas` |
@@ -159,9 +158,9 @@ cargo test --test strategy_integration -- --nocapture
 - ✅ `test_i1_profit_estimates_to_strategy_plan` — 4 targets (3 profitable, 1 loss) → ExecutionPlan correct
 - ✅ `test_i1_empty_profit_results_empty_plan` — 0 targets → empty plan
 
-**I2 — Direct vs FlashLoan consistency (2 tests):**
-- ✅ `test_i2_method_changes_with_wallet_state` — No token→FlashLoan, add token→Direct, verify profit diff
-- ✅ `test_i2_flash_loan_fee_exceeds_profit_skips` — Flash fee 10% > profit → Skip
+**I2 — Direct vs Skip consistency (2 tests):**
+- ✅ `test_i2_method_changes_with_wallet_state` — No token→Skip, add token→Direct, verify profit diff
+- ✅ `test_i2_debt_too_large_skips` — Debt vượt direct_max_debt_usd → Skip
 
 **I3 — Multi-target batch ordering (2 tests):**
 - ✅ `test_i3_multi_target_batch_ordering_5_targets` — 5 targets sorted by priority, unprofitable skipped
@@ -172,7 +171,7 @@ cargo test --test strategy_integration -- --nocapture
 - ✅ `test_i4_circuit_breaker_stats_accumulate` — 2 trips → stats accumulate correctly
 
 **I5 — Wallet/gas state changes (2 tests):**
-- ✅ `test_i5_plan_changes_with_token_availability` — No token→all FlashLoan, add token→all Direct
+- ✅ `test_i5_plan_changes_with_token_availability` — No token→all Skip, add token→all Direct
 - ✅ `test_i5_gas_price_blocks_all_targets` — Normal gas→execute, spike→skip, drop→execute
 
 **I6 — Full pipeline simulation (3 tests):**
@@ -201,8 +200,8 @@ cargo test --test strategy_scenario test_s2 -- --nocapture
 **S1 — Happy path: Direct liquidation:**
 - ✅ `test_s1_happy_path_direct_liquidation` — Wallet đủ USDC → chọn Direct, verify priority score [0,10]
 
-**S2 — Flash loan fallback:**
-- ✅ `test_s2_flash_loan_fallback` — Wallet thiếu USDC → chọn FlashLoan (hoặc Skip nếu fee > profit)
+**S2 — No-token fallback:**
+- ✅ `test_s2_no_token_skip` — Wallet thiếu USDC → chọn Skip
 
 **S3 — Multi-target priority ordering:**
 - ✅ `test_s3_multi_target_priority_ordering` — 3 users khác HF/debt → verify sorted DESC, ranks sequential
@@ -230,7 +229,7 @@ cargo test --test strategy_scenario test_s2 -- --nocapture
 
 **Verify checklist:**
 - [x] Strategy decision log xuất hiện
-- [x] Method đúng (Direct/FlashLoan/Skip) theo điều kiện
+- [x] Method đúng (Direct/Skip) theo điều kiện
 - [x] Priority score hợp lý (0-10)
 - [x] Concurrent limit được enforce
 - [x] Circuit breaker trip khi có nhiều failures
@@ -270,11 +269,11 @@ cargo test --test strategy_scenario test_s2 -- --nocapture
 
 ### Config presets cho tests:
 
-| Preset | Flash Loan | Max Gas (gwei) | Max Concurrent | Use Case |
-|--------|-----------|----------------|----------------|----------|
-| `default()` | true | 100 | 3 | Unit tests |
-| `mainnet()` | true | 50 | 3 | Production simulation |
-| `local_fork()` | false | 500 | 5 | Anvil integration |
+| Preset | Strategy Policy | Max Gas (gwei) | Max Concurrent | Use Case |
+|--------|-----------------|----------------|----------------|----------|
+| `default()` | Direct/Skip | 100 | 3 | Unit tests |
+| `mainnet()` | Direct/Skip | 50 | 3 | Production simulation |
+| `local_fork()` | Direct/Skip | 500 | 5 | Anvil integration |
 
 ---
 

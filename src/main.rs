@@ -311,10 +311,8 @@ async fn main() {
             let mut profit_config = ProfitConfig::local_fork(); // Dùng local_fork() cho Anvil
             profit_config.min_profit_usd = env_f64("PROFIT_MIN_USD", profit_config.min_profit_usd);
             profit_config.min_roi_pct = env_f64("PROFIT_MIN_ROI_PCT", profit_config.min_roi_pct);
-            profit_config.include_flash_loan_fee = env_bool(
-                "PROFIT_INCLUDE_FLASH_LOAN_FEE",
-                profit_config.include_flash_loan_fee,
-            );
+            // Direct/Skip-only strategy: keep flash-loan fee disabled to avoid misleading estimates.
+            profit_config.include_flash_loan_fee = false;
             profit_config.fallback_gas_price_gwei = env_f64(
                 "PROFIT_FALLBACK_GAS_PRICE_GWEI",
                 profit_config.fallback_gas_price_gwei,
@@ -336,13 +334,12 @@ async fn main() {
                 profit_calculator.config().min_roi_pct,
             );
             
-            // ── Khởi tạo Strategy Decider (quyết định direct vs flash loan + ưu tiên targets) ──
+            // ── Khởi tạo Strategy Decider (quyết định direct/skip + ưu tiên targets) ──
             let strategy_config = StrategyConfig::local_fork(); // Dùng local_fork() cho Anvil
             let strategy_decider = Arc::new(StrategyDecider::new(strategy_config.clone()));
             
-            tracing::info!("✓ Strategy Decider initialized (max_concurrent={}, flash_loan={})",
+            tracing::info!("✓ Strategy Decider initialized (max_concurrent={})",
                 strategy_config.max_concurrent_liquidations,
-                strategy_config.flash_loan_available,
             );
 
             // ── Khởi tạo LiquidationExecutor và spawn executor workers ──
@@ -355,18 +352,8 @@ async fn main() {
             });
 
             let mut executor_config = ExecutorConfig::testnet(aave_pool_address);
-            executor_config.use_flash_loan = strategy_config.flash_loan_available;
             executor_config.simulate_before_execute = env_bool("EXECUTOR_SIMULATE_BEFORE_EXECUTE", executor_config.simulate_before_execute);
             executor_config.dry_run = env_bool("EXECUTOR_DRY_RUN", executor_config.dry_run);
-            executor_config.liquidator_contract = std::env::var("LIQUIDATOR_CONTRACT")
-                .ok()
-                .and_then(|addr| addr.parse().ok());
-
-            if strategy_config.flash_loan_available && executor_config.liquidator_contract.is_none() {
-                tracing::warn!(
-                    "Strategy has flash loan enabled but LIQUIDATOR_CONTRACT is not configured; flash-loan executions will fail"
-                );
-            }
 
             match LiquidationExecutor::new(
                 executor_config,

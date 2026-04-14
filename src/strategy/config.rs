@@ -1,34 +1,26 @@
 // Strategy Decider Configuration
 //
 // Cấu hình cho module quyết định chiến lược thanh lý:
-// - Direct vs Flash Loan thresholds
+// - Direct vs Skip thresholds
 // - Target prioritization weights
 // - Risk management limits
 
 /// Cấu hình cho Strategy Decider
 #[derive(Debug, Clone)]
 pub struct StrategyConfig {
-    // ── Direct vs Flash Loan ──
+    // ── Direct vs Skip ──
     
     /// Số dư tối thiểu trong ví để dùng direct liquidation (ETH)
-    /// Nếu balance < min → luôn dùng flash loan
+    /// Nếu balance < min → skip
     pub min_wallet_balance_eth: f64,
     
-    /// Ngưỡng debt value (USD) — nếu debt > ngưỡng → flash loan
+    /// Ngưỡng debt value (USD) cho direct liquidation
     /// Vì direct liquidation cần sẵn token trong ví
     pub direct_max_debt_usd: f64,
-    
-    /// Flash loan có sẵn không (cần liquidator contract deployed)
-    pub flash_loan_available: bool,
-    
-    /// Flash loan fee (%) — Aave V3: 0.05%
-    pub flash_loan_fee_pct: f64,
     
     /// Gas limit cho direct liquidation
     pub direct_gas_limit: u64,
     
-    /// Gas limit cho flash loan liquidation (cao hơn vì phức tạp hơn)
-    pub flash_loan_gas_limit: u64,
     
     // ── Target Prioritization ──
     
@@ -68,13 +60,10 @@ pub struct StrategyConfig {
 impl Default for StrategyConfig {
     fn default() -> Self {
         Self {
-            // Direct vs Flash Loan
+            // Direct vs Skip
             min_wallet_balance_eth: 0.5,
             direct_max_debt_usd: 5_000.0,
-            flash_loan_available: false,
-            flash_loan_fee_pct: 0.05,
             direct_gas_limit: 500_000,
-            flash_loan_gas_limit: 800_000,
             
             // Prioritization weights (tổng = 1.0)
             weight_profit: 0.4,
@@ -99,10 +88,7 @@ impl StrategyConfig {
         Self {
             min_wallet_balance_eth: 1.0,
             direct_max_debt_usd: 10_000.0,
-            flash_loan_available: true,
-            flash_loan_fee_pct: 0.05,
             direct_gas_limit: 500_000,
-            flash_loan_gas_limit: 800_000,
             
             weight_profit: 0.4,
             weight_urgency: 0.3,
@@ -123,10 +109,7 @@ impl StrategyConfig {
         Self {
             min_wallet_balance_eth: 0.1,
             direct_max_debt_usd: 50_000.0,
-            flash_loan_available: false,
-            flash_loan_fee_pct: 0.05,
             direct_gas_limit: 500_000,
-            flash_loan_gas_limit: 800_000,
             
             weight_profit: 0.5,
             weight_urgency: 0.3,
@@ -173,15 +156,12 @@ mod tests {
     fn test_default_config() {
         let config = StrategyConfig::default();
         assert_eq!(config.direct_gas_limit, 500_000);
-        assert_eq!(config.flash_loan_gas_limit, 800_000);
-        assert!(!config.flash_loan_available);
         assert_eq!(config.circuit_breaker_threshold, 5);
     }
     
     #[test]
     fn test_mainnet_preset() {
         let config = StrategyConfig::mainnet();
-        assert!(config.flash_loan_available);
         assert_eq!(config.max_gas_price_gwei, 50.0);
         assert_eq!(config.circuit_breaker_threshold, 3);
     }
@@ -189,7 +169,6 @@ mod tests {
     #[test]
     fn test_local_fork_preset() {
         let config = StrategyConfig::local_fork();
-        assert!(!config.flash_loan_available);
         assert_eq!(config.max_gas_price_gwei, 500.0);
         assert_eq!(config.max_concurrent_liquidations, 5);
     }

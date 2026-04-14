@@ -2,7 +2,7 @@
 //
 // Test tích hợp giữa Strategy Decider với các module khác:
 // - I1: Profit → Strategy pipeline
-// - I2: Strategy decision consistency (Direct vs FlashLoan)
+// - I2: Strategy decision consistency (Direct vs Skip)
 // - I3: Multi-target batch ordering (5+ targets)
 // - I4: Circuit breaker → plan rejection
 // - I5: Wallet state changes → method re-evaluation
@@ -125,25 +125,24 @@ async fn test_i1_empty_profit_results_empty_plan() {
 }
 
 // ============================================================================
-// I2: Strategy Decision Consistency — Direct vs FlashLoan
+// I2: Strategy Decision Consistency — Direct vs Skip
 // Verify method selection thay đổi đúng khi wallet state thay đổi
 // ============================================================================
 
 #[tokio::test]
 async fn test_i2_method_changes_with_wallet_state() {
-    let mut config = StrategyConfig::local_fork();
-    config.flash_loan_available = true;
+    let config = StrategyConfig::local_fork();
     let decider = StrategyDecider::new(config);
     
     let target = mock_target("0xuser", 0.88, 20_000.0);
     let estimate = mock_estimate("0xuser", 500.0, 20_000.0, "USDC");
     
-    // ── Trạng thái 1: Không có USDC → FlashLoan ──
+    // ── Trạng thái 1: Không có USDC → Skip ──
     decider.update_wallet_balance(5.0).await;
     let d1 = decider.decide_single(&target, &estimate).await;
-    assert!(matches!(d1.method, ExecutionMethod::FlashLoan { .. }),
-        "No USDC should trigger FlashLoan");
-    let flash_profit = d1.adjusted_profit_usd;
+    assert!(matches!(d1.method, ExecutionMethod::Skip { .. }),
+        "No USDC should trigger Skip");
+    let skip_profit = d1.adjusted_profit_usd;
     
     // ── Trạng thái 2: Thêm đủ USDC → Direct ──
     decider.update_token_balance("USDC".to_string(), 20_000.0).await;
@@ -152,36 +151,34 @@ async fn test_i2_method_changes_with_wallet_state() {
         "Enough USDC should trigger Direct");
     let direct_profit = d2.adjusted_profit_usd;
     
-    // Direct profit > FlashLoan profit (không mất fee)
-    assert!(direct_profit > flash_profit,
-        "Direct profit ${:.2} should > FlashLoan profit ${:.2}",
-        direct_profit, flash_profit);
+    // Direct profit > Skip profit (skip = 0)
+    assert!(direct_profit > skip_profit,
+        "Direct profit ${:.2} should > Skip profit ${:.2}",
+        direct_profit, skip_profit);
     
-    // ── Trạng thái 3: ETH quá thấp, no flash loan → Skip ──
+    // ── Trạng thái 3: ETH quá thấp → Skip ──
     decider.update_wallet_balance(0.001).await;
-    // Trường hợp flash loan vẫn available → FlashLoan (vì ETH thấp)
     let d3 = decider.decide_single(&target, &estimate).await;
-    assert!(matches!(d3.method, ExecutionMethod::FlashLoan { .. }),
-        "Low ETH with flash loan available should FlashLoan");
+    assert!(matches!(d3.method, ExecutionMethod::Skip { .. }),
+        "Low ETH should Skip");
 }
 
 #[tokio::test]
-async fn test_i2_flash_loan_fee_exceeds_profit_skips() {
+async fn test_i2_debt_too_large_skips() {
     let mut config = StrategyConfig::local_fork();
-    config.flash_loan_available = true;
-    config.flash_loan_fee_pct = 10.0; // 10% fee (rất cao để profit < 0)
+    config.direct_max_debt_usd = 10_000.0;
     let decider = StrategyDecider::new(config);
     
     decider.update_wallet_balance(5.0).await;
-    // Không có USDC → phải dùng flash loan → nhưng fee quá cao
+    decider.update_token_balance("USDC".to_string(), 200_000.0).await;
     
-    // debt_to_cover = 100_000 * 0.5 = $50k → fee = $5000 > profit $200
+    // debt_to_cover = 100_000 * 0.5 = $50k > direct_max_debt_usd($10k) → skip
     let target = mock_target("0xuser", 0.90, 100_000.0);
     let estimate = mock_estimate("0xuser", 200.0, 100_000.0, "USDC");
     
     let decision = decider.decide_single(&target, &estimate).await;
     assert!(matches!(decision.method, ExecutionMethod::Skip { .. }),
-        "Flash loan fee > profit should Skip");
+        "Debt above direct max should Skip");
 }
 
 // ============================================================================
@@ -361,8 +358,7 @@ async fn test_i4_circuit_breaker_stats_accumulate() {
 
 #[tokio::test]
 async fn test_i5_plan_changes_with_token_availability() {
-    let mut config = StrategyConfig::local_fork();
-    config.flash_loan_available = true;
+    let config = StrategyConfig::local_fork();
     let decider = StrategyDecider::new(config);
     
     decider.update_wallet_balance(5.0).await;
@@ -372,20 +368,21 @@ async fn test_i5_plan_changes_with_token_availability() {
         (mock_target("0x2", 0.90, 10_000.0), mock_estimate("0x2", 400.0, 10_000.0, "USDC")),
     ];
     
-    // ── Không có token → tất cả FlashLoan ──
+    // ── Không có token → tất cả Skip ──
     let plan1 = decider.create_plan(make_inputs()).await.unwrap();
-    assert_eq!(plan1.flash_loan_count, 2, "All should use FlashLoan without token");
+    assert_eq!(plan1.execute_count, 0, "All should skip without token");
+    assert_eq!(plan1.skip_count, 2, "All should skip without token");
     assert_eq!(plan1.direct_count, 0);
     
     // ── Thêm đủ token → tất cả Direct ──
     decider.update_token_balance("USDC".to_string(), 100_000.0).await;
     let plan2 = decider.create_plan(make_inputs()).await.unwrap();
     assert_eq!(plan2.direct_count, 2, "All should use Direct with token");
-    assert_eq!(plan2.flash_loan_count, 0);
+    assert_eq!(plan2.skip_count, 0);
     
-    // Direct plan phải có total profit cao hơn (không mất flash fee)
+    // Direct plan phải có total profit cao hơn
     assert!(plan2.total_estimated_profit > plan1.total_estimated_profit,
-        "Direct plan profit ${:.2} > FlashLoan plan profit ${:.2}",
+        "Direct plan profit ${:.2} > Skip plan profit ${:.2}",
         plan2.total_estimated_profit, plan1.total_estimated_profit);
 }
 

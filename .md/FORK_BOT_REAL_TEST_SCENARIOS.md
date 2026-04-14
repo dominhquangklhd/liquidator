@@ -105,20 +105,20 @@ Pass/Fail:
 
 Muc tieu:
 
-- Kiem tra bot chon route dung (Direct/FlashLoan/Skip) theo cau hinh va context.
+- Kiem tra bot chon route dung (Direct/Skip) theo cau hinh va context.
 
 Buoc chay:
 
-1. Chay bot voi flash loan tat.
+1. Chay bot voi cau hinh mac dinh (direct/skip).
 2. Tao target liquidatable -> quan sat method Direct/Skip.
-3. Bat flash loan + set LIQUIDATOR_CONTRACT.
-4. Tao target moi -> quan sat route FlashLoan duoc chon.
+3. Giam token debt trong vi liquidator.
+4. Tao target moi -> quan sat route Skip duoc chon.
 
 Expected:
 
 - Strategy log method ro rang.
 - Worker truyen method dung vao executor.
-- Neu FlashLoan chua tich hop full, phai fail co thong diep ro rang (khong silent).
+- Khi khong du token debt cho direct, target phai duoc Skip ro rang (khong silent).
 
 Pass/Fail:
 

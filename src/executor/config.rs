@@ -22,12 +22,6 @@ pub struct ExecutorConfig {
     /// Aave Pool contract address
     pub aave_pool_address: H160,
     
-    /// Our liquidator contract address (if using flash loans)
-    pub liquidator_contract: Option<H160>,
-    
-    /// Whether to use flash loans for liquidation
-    pub use_flash_loan: bool,
-    
     /// Maximum concurrent pending transactions
     pub max_pending_txs: usize,
     
@@ -55,8 +49,6 @@ impl Default for ExecutorConfig {
             gas_limit: 500_000,             // 500k gas limit
             priority_fee_gwei: 2.0,         // 2 Gwei tip
             aave_pool_address: H160::zero(),
-            liquidator_contract: None,
-            use_flash_loan: false,
             max_pending_txs: 5,
             tx_timeout_secs: 60,
             max_retries: 3,

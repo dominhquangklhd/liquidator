@@ -1,7 +1,7 @@
 // Liquidation Executor
 //
 // Core execution engine for liquidation transactions
-// Supports both direct liquidation and flash loan liquidation
+// Supports direct liquidation path
 
 use super::config::ExecutorConfig;
 use super::nonce::NonceManager;
@@ -224,15 +224,8 @@ impl LiquidationExecutor {
     
     /// Execute liquidation on a target
     pub async fn liquidate(&self, target: &LiquidationTarget) -> Result<LiquidationResult> {
-        let default_method = if self.config.use_flash_loan {
-            ExecutionMethod::FlashLoan {
-                gas_limit: self.config.gas_limit,
-                fee_usd: 0.0,
-            }
-        } else {
-            ExecutionMethod::Direct {
-                gas_limit: self.config.gas_limit,
-            }
+        let default_method = ExecutionMethod::Direct {
+            gas_limit: self.config.gas_limit,
         };
 
         self.liquidate_with_method(target, &default_method).await
@@ -292,15 +285,6 @@ impl LiquidationExecutor {
                 }
 
                 self.execute_direct_liquidation(target, Some(*gas_limit)).await
-            }
-            ExecutionMethod::FlashLoan { gas_limit, fee_usd } => {
-                if self.config.simulate_before_execute {
-                    if let Err(e) = self.simulate_flash_loan_liquidation(target).await {
-                        return Ok(LiquidationResult::failed(format!("Flash-loan simulation failed: {}", e)));
-                    }
-                }
-
-                self.execute_flash_loan_liquidation(target, Some(*gas_limit), *fee_usd).await
             }
             ExecutionMethod::Skip { reason } => Ok(LiquidationResult::failed(format!(
                 "Strategy requested skip: {}",
@@ -397,22 +381,6 @@ impl LiquidationExecutor {
         }
     }
 
-    /// Simulate flash-loan liquidation.
-    ///
-    /// Current codebase does not yet include flash-loan liquidator contract bindings,
-    /// so we validate only flash-loan prerequisites here.
-    async fn simulate_flash_loan_liquidation(&self, _target: &LiquidationTarget) -> Result<()> {
-        if !self.config.use_flash_loan {
-            bail!("Flash-loan mode is disabled in ExecutorConfig");
-        }
-
-        if self.config.liquidator_contract.is_none() {
-            bail!("ExecutorConfig.liquidator_contract is not configured");
-        }
-
-        Ok(())
-    }
-    
     /// Execute direct liquidation transaction via Aave Pool liquidationCall.
     async fn execute_direct_liquidation(
         &self,
@@ -571,45 +539,6 @@ impl LiquidationExecutor {
         }
     }
 
-    /// Execute flash-loan liquidation transaction.
-    ///
-    /// This path is intentionally separated from direct execution and requires
-    /// a dedicated liquidator contract integration.
-    async fn execute_flash_loan_liquidation(
-        &self,
-        target: &LiquidationTarget,
-        gas_limit_override: Option<u64>,
-        fee_usd: f64,
-    ) -> Result<LiquidationResult> {
-        if !self.config.use_flash_loan {
-            return Ok(LiquidationResult::failed(
-                "Strategy selected FLASH_LOAN but ExecutorConfig.use_flash_loan=false".to_string(),
-            ));
-        }
-
-        let liquidator_contract = match self.config.liquidator_contract {
-            Some(addr) => addr,
-            None => {
-                return Ok(LiquidationResult::failed(
-                    "Strategy selected FLASH_LOAN but ExecutorConfig.liquidator_contract is missing"
-                        .to_string(),
-                ));
-            }
-        };
-
-        tracing::warn!(
-            "FLASH_LOAN path selected for {} (contract={:?}, gas_limit_hint={}, fee_usd={:.4}) but on-chain flash executor binding is not implemented yet",
-            target.user_address,
-            liquidator_contract,
-            gas_limit_override.unwrap_or(self.config.gas_limit),
-            fee_usd,
-        );
-
-        Ok(LiquidationResult::failed(
-            "Flash-loan execution path requires liquidator contract ABI/call integration".to_string(),
-        ))
-    }
-    
     /// Check if target is already being liquidated
     async fn is_pending(&self, user_address: &str) -> bool {
         let pending = self.pending.read().await;

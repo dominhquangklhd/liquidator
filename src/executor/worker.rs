@@ -411,7 +411,6 @@ fn should_trip_circuit_breaker(error: &str) -> bool {
         "preflight failed:",
         "approval failed:",
         "simulation failed:",
-        "flash-loan simulation failed:",
         "already pending",
         "too many pending transactions",
         "strategy requested skip:",

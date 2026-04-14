@@ -1,7 +1,7 @@
 // Strategy Decider Types
 //
 // Kiểu dữ liệu cho module quyết định chiến lược:
-// - ExecutionMethod: Direct vs Flash Loan
+// - ExecutionMethod: Direct vs Skip
 // - StrategyDecision: Quyết định cho một target
 // - PrioritizedTarget: Target đã được ranked
 // - ExecutionPlan: Kế hoạch execute batch
@@ -19,15 +19,6 @@ pub enum ExecutionMethod {
         gas_limit: u64,
     },
     
-    /// Flash loan liquidation — vay token từ Aave/Uniswap, trả ngay trong 1 tx
-    /// Không cần vốn, nhưng gas cao hơn và mất flash loan fee
-    FlashLoan {
-        /// Gas limit cho tx flash loan (cao hơn)
-        gas_limit: u64,
-        /// Flash loan fee (USD)
-        fee_usd: f64,
-    },
-    
     /// Bỏ qua — không nên execute
     Skip {
         /// Lý do bỏ qua
@@ -43,7 +34,6 @@ impl ExecutionMethod {
     pub fn gas_limit(&self) -> u64 {
         match self {
             ExecutionMethod::Direct { gas_limit } => *gas_limit,
-            ExecutionMethod::FlashLoan { gas_limit, .. } => *gas_limit,
             ExecutionMethod::Skip { .. } => 0,
         }
     }
@@ -51,7 +41,6 @@ impl ExecutionMethod {
     pub fn label(&self) -> &str {
         match self {
             ExecutionMethod::Direct { .. } => "DIRECT",
-            ExecutionMethod::FlashLoan { .. } => "FLASH_LOAN",
             ExecutionMethod::Skip { .. } => "SKIP",
         }
     }
@@ -62,9 +51,6 @@ impl std::fmt::Display for ExecutionMethod {
         match self {
             ExecutionMethod::Direct { gas_limit } => {
                 write!(f, "Direct (gas: {})", gas_limit)
-            }
-            ExecutionMethod::FlashLoan { gas_limit, fee_usd } => {
-                write!(f, "FlashLoan (gas: {}, fee: ${:.2})", gas_limit, fee_usd)
             }
             ExecutionMethod::Skip { reason } => {
                 write!(f, "Skip: {}", reason)
@@ -148,9 +134,6 @@ pub struct ExecutionPlan {
     /// Số targets dùng direct
     pub direct_count: usize,
     
-    /// Số targets dùng flash loan
-    pub flash_loan_count: usize,
-    
     /// Tổng estimated profit (USD)
     pub total_estimated_profit: f64,
     
@@ -172,9 +155,6 @@ impl ExecutionPlan {
         let direct_count = targets.iter()
             .filter(|t| matches!(t.decision.method, ExecutionMethod::Direct { .. }))
             .count();
-        let flash_loan_count = targets.iter()
-            .filter(|t| matches!(t.decision.method, ExecutionMethod::FlashLoan { .. }))
-            .count();
         
         let total_estimated_profit: f64 = targets.iter()
             .filter(|t| t.decision.should_execute())
@@ -192,7 +172,6 @@ impl ExecutionPlan {
             execute_count,
             skip_count,
             direct_count,
-            flash_loan_count,
             total_estimated_profit,
             total_exposure_usd,
             created_at: chrono::Utc::now().timestamp(),
@@ -209,9 +188,9 @@ impl ExecutionPlan {
     /// In plan summary
     pub fn summary(&self) -> String {
         format!(
-            "ExecutionPlan: {}/{} targets (direct: {}, flash: {}, skip: {}) | profit: ${:.2} | exposure: ${:.2}",
+            "ExecutionPlan: {}/{} targets (direct: {}, skip: {}) | profit: ${:.2} | exposure: ${:.2}",
             self.execute_count, self.total_input,
-            self.direct_count, self.flash_loan_count, self.skip_count,
+            self.direct_count, self.skip_count,
             self.total_estimated_profit, self.total_exposure_usd,
         )
     }
@@ -231,14 +210,6 @@ mod tests {
         assert_eq!(method.gas_limit(), 500_000);
         assert_eq!(method.label(), "DIRECT");
         assert!(format!("{}", method).contains("Direct"));
-    }
-    
-    #[test]
-    fn test_execution_method_flash_loan() {
-        let method = ExecutionMethod::FlashLoan { gas_limit: 800_000, fee_usd: 4.0 };
-        assert!(!method.is_skip());
-        assert_eq!(method.gas_limit(), 800_000);
-        assert_eq!(method.label(), "FLASH_LOAN");
     }
     
     #[test]
@@ -287,8 +258,7 @@ mod tests {
             total_input: 5,
             execute_count: 3,
             skip_count: 2,
-            direct_count: 2,
-            flash_loan_count: 1,
+            direct_count: 3,
             total_estimated_profit: 500.0,
             total_exposure_usd: 25_000.0,
             created_at: 0,

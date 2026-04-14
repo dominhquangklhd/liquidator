@@ -2,10 +2,9 @@
 //
 // Core logic quyết định chiến lược thanh lý:
 //
-// 1. Direct vs Flash Loan:
+// 1. Direct vs Skip:
 //    - Kiểm tra wallet balance → đủ token? → Direct
-//    - Debt quá lớn hoặc không đủ vốn? → Flash Loan
-//    - Flash loan không sẵn sàng? → Direct (nếu đủ) hoặc Skip
+//    - Debt quá lớn hoặc không đủ vốn? → Skip
 //
 // 2. Target Prioritization (multi-factor scoring):
 //    Score = w_profit × normalize(profit) 
@@ -85,9 +84,6 @@ pub struct StrategyStats {
     
     /// Số lần chọn Direct
     pub direct_count: u64,
-    
-    /// Số lần chọn Flash Loan
-    pub flash_loan_count: u64,
     
     /// Số lần Skip
     pub skip_count: u64,
@@ -299,7 +295,6 @@ impl StrategyDecider {
                 let mut stats = self.stats.write().await;
                 match &method {
                     ExecutionMethod::Direct { .. } => stats.direct_count += 1,
-                    ExecutionMethod::FlashLoan { .. } => stats.flash_loan_count += 1,
                     ExecutionMethod::Skip { .. } => stats.skip_count += 1,
                 }
             }
@@ -386,14 +381,13 @@ impl StrategyDecider {
     // INTERNAL: Method Decision
     // ========================================================================
     
-    /// Logic chọn Direct vs Flash Loan
+    /// Logic chọn Direct vs Skip
     ///
     /// Decision tree:
-    /// 1. wallet_eth < min_balance → Flash Loan (nếu có) | Skip
-    /// 2. debt_to_cover > direct_max → Flash Loan (nếu có) | trả trực tiếp nếu đủ token
+    /// 1. wallet_eth < min_balance → Skip
+    /// 2. debt_to_cover > direct_max → Skip
     /// 3. Có đủ debt token trong ví → Direct
-    /// 4. Không đủ token, flash loan available → Flash Loan
-    /// 5. Không đủ token, flash loan unavailable → Skip
+    /// 4. Không đủ token → Skip
     fn decide_method(
         &self,
         estimate: &ProfitEstimate,
@@ -405,28 +399,16 @@ impl StrategyDecider {
         
         // Check 1: Wallet balance đủ ETH cho gas?
         if wallet_eth < self.config.min_wallet_balance_eth {
-            if self.config.flash_loan_available {
-                let fee = debt_to_cover_usd * self.config.flash_loan_fee_pct / 100.0;
-                let adjusted = estimate.net_profit_usd - fee;
-                return (
-                    ExecutionMethod::FlashLoan {
-                        gas_limit: self.config.flash_loan_gas_limit,
-                        fee_usd: fee,
-                    },
-                    adjusted,
-                    format!("Flash loan: ETH balance {:.4} < min {:.4}", 
-                        wallet_eth, self.config.min_wallet_balance_eth),
-                );
-            } else {
-                return (
-                    ExecutionMethod::Skip {
-                        reason: format!("ETH balance {:.4} < min {:.4}, flash loan unavailable",
-                            wallet_eth, self.config.min_wallet_balance_eth),
-                    },
-                    0.0,
-                    "Insufficient ETH, no flash loan".to_string(),
-                );
-            }
+            return (
+                ExecutionMethod::Skip {
+                    reason: format!(
+                        "ETH balance {:.4} < min {:.4}",
+                        wallet_eth, self.config.min_wallet_balance_eth
+                    ),
+                },
+                0.0,
+                "Insufficient ETH for direct execution".to_string(),
+            );
         }
         
         // Check 2: Có đủ debt token trong ví?
@@ -450,53 +432,27 @@ impl StrategyDecider {
             );
         }
         
-        if has_enough_token && debt_too_large {
-            // Có token nhưng debt lớn → vẫn direct nếu đủ, vì tiết kiệm flash loan fee
+        if debt_too_large {
             return (
-                ExecutionMethod::Direct {
-                    gas_limit: self.config.direct_gas_limit,
+                ExecutionMethod::Skip {
+                    reason: format!(
+                        "Debt to cover ${:.0} > direct max ${:.0}",
+                        debt_to_cover_usd,
+                        self.config.direct_max_debt_usd
+                    ),
                 },
-                estimate.net_profit_usd,
-                format!("Direct: đủ {} token (debt lớn ${:.0} nhưng có sẵn token)",
-                    debt_asset, debt_to_cover_usd),
+                0.0,
+                "Debt size exceeds direct execution limit".to_string(),
             );
         }
-        
-        // Không đủ token → cần flash loan
-        if self.config.flash_loan_available {
-            let fee = debt_to_cover_usd * self.config.flash_loan_fee_pct / 100.0;
-            let adjusted = estimate.net_profit_usd - fee;
-            
-            if adjusted <= 0.0 {
-                return (
-                    ExecutionMethod::Skip {
-                        reason: format!(
-                            "Flash loan fee ${:.2} > net profit ${:.2}",
-                            fee, estimate.net_profit_usd
-                        ),
-                    },
-                    0.0,
-                    "Flash loan fee exceeds profit".to_string(),
-                );
-            }
-            
-            return (
-                ExecutionMethod::FlashLoan {
-                    gas_limit: self.config.flash_loan_gas_limit,
-                    fee_usd: fee,
-                },
-                adjusted,
-                format!("Flash loan: không đủ {} token, fee ${:.2}", debt_asset, fee),
-            );
-        }
-        
-        // Không đủ token và không có flash loan → skip
+
+        // Không đủ token → skip
         (
             ExecutionMethod::Skip {
-                reason: format!("Không đủ {} token, flash loan unavailable", debt_asset),
+                reason: format!("Không đủ {} token cho direct liquidation", debt_asset),
             },
             0.0,
-            format!("No {} token, no flash loan", debt_asset),
+            format!("No sufficient {} token for direct liquidation", debt_asset),
         )
     }
     
@@ -646,7 +602,7 @@ impl Normalizer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::profit::{ProfitEstimate, ProfitBreakdown, LiquidationPair, GasCostEstimate};
+    use crate::profit::{ProfitEstimate, ProfitBreakdown, LiquidationPair};
     
     /// Helper: tạo ProfitEstimate mẫu
     fn mock_estimate(user: &str, profit: f64, debt: f64, debt_asset: &str) -> ProfitEstimate {
@@ -736,9 +692,8 @@ mod tests {
     }
     
     #[tokio::test]
-    async fn test_decide_flash_loan_no_tokens() {
-        let mut config = StrategyConfig::local_fork();
-        config.flash_loan_available = true; // Enable flash loan
+    async fn test_decide_skip_no_tokens() {
+        let config = StrategyConfig::local_fork();
         let decider = StrategyDecider::new(config);
         
         // Wallet KHÔNG có USDC
@@ -749,19 +704,17 @@ mod tests {
         
         let decision = decider.decide_single(&target, &estimate).await;
         
-        assert!(matches!(decision.method, ExecutionMethod::FlashLoan { .. }));
-        assert!(decision.should_execute());
-        // adjusted_profit = 500 - flash_loan_fee
-        assert!(decision.adjusted_profit_usd < 500.0);
+        assert!(matches!(decision.method, ExecutionMethod::Skip { .. }));
+        assert!(!decision.should_execute());
         println!("Decision: {}", decision.summary());
     }
     
     #[tokio::test]
     async fn test_decide_skip_no_tokens_no_flash() {
-        let config = StrategyConfig::local_fork(); // flash_loan_available = false
+        let config = StrategyConfig::local_fork();
         let decider = StrategyDecider::new(config);
         
-        // Wallet KHÔNG có USDC, flash loan unavailable
+        // Wallet KHÔNG có USDC
         decider.update_wallet_balance(5.0).await;
         
         let target = mock_target("0xuser3", 0.92, 20_000.0);
@@ -778,7 +731,7 @@ mod tests {
         let config = StrategyConfig::local_fork(); // min_wallet_balance = 0.1
         let decider = StrategyDecider::new(config);
         
-        // ETH balance quá thấp, flash loan unavailable
+        // ETH balance quá thấp
         decider.update_wallet_balance(0.01).await;
         
         let target = mock_target("0xuser4", 0.88, 10_000.0);
@@ -1052,13 +1005,13 @@ mod tests {
     
     #[tokio::test]
     async fn test_wallet_balance_update_affects_decisions() {
-        let config = StrategyConfig::local_fork(); // flash_loan_available = false
+        let config = StrategyConfig::local_fork();
         let decider = StrategyDecider::new(config);
         
         let target = mock_target("0xuser", 0.90, 10_000.0);
         let estimate = mock_estimate("0xuser", 300.0, 10_000.0, "USDC");
         
-        // ETH quá thấp (< min 0.1), no flash loan → Skip
+        // ETH quá thấp (< min 0.1) → Skip
         decider.update_wallet_balance(0.01).await;
         let d1 = decider.decide_single(&target, &estimate).await;
         assert!(matches!(d1.method, ExecutionMethod::Skip { .. }), "Too low ETH should Skip");
@@ -1070,12 +1023,11 @@ mod tests {
         assert!(matches!(d2.method, ExecutionMethod::Direct { .. }), "Enough ETH + token should Direct");
     }
     
-    // ── U21: Token balance update affects Direct/FlashLoan ──
+    // ── U21: Token balance update affects Direct/Skip ──
     
     #[tokio::test]
     async fn test_token_balance_update_affects_method() {
-        let mut config = StrategyConfig::local_fork();
-        config.flash_loan_available = true; // Enable flash loan
+        let config = StrategyConfig::local_fork();
         let decider = StrategyDecider::new(config);
         
         decider.update_wallet_balance(5.0).await;
@@ -1083,18 +1035,18 @@ mod tests {
         let target = mock_target("0xuser", 0.90, 10_000.0);
         let estimate = mock_estimate("0xuser", 300.0, 10_000.0, "USDC");
         
-        // Không có USDC → Flash Loan
+        // Không có USDC → Skip
         let d1 = decider.decide_single(&target, &estimate).await;
-        assert!(matches!(d1.method, ExecutionMethod::FlashLoan { .. }), "No token → FlashLoan");
+        assert!(matches!(d1.method, ExecutionMethod::Skip { .. }), "No token → Skip");
         
         // Thêm đủ USDC → Direct
         decider.update_token_balance("USDC".to_string(), 10_000.0).await;
         let d2 = decider.decide_single(&target, &estimate).await;
         assert!(matches!(d2.method, ExecutionMethod::Direct { .. }), "Enough token → Direct");
         
-        // Direct nên có profit cao hơn (không mất flash loan fee)
+        // Direct nên có adjusted profit cao hơn Skip (Skip = 0)
         assert!(d2.adjusted_profit_usd > d1.adjusted_profit_usd, 
-            "Direct should have higher profit than FlashLoan");
+            "Direct should have higher profit than Skip");
     }
     
     // ── U23: Per-liquidation exposure limit ──
