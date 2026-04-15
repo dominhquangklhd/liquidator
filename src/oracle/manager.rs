@@ -9,8 +9,9 @@
 // - Thống kê hoạt động
 
 use ethers::providers::{Provider, Http, Ws, Middleware};
-use ethers::types::{Filter, H256, Log};
-use anyhow::{Result, bail};
+use ethers::types::{Filter, H256, Log, I256};
+use ethers::abi::{decode, ParamType, Token};
+use anyhow::{Result, bail, Context};
 use futures::StreamExt;
 use std::sync::Arc;
 use std::collections::HashMap;
@@ -335,14 +336,122 @@ impl OracleManager {
             return Ok(());
         };
 
-        self.poll_single_feed(asset_id, feed).await?;
+        let decoded = Self::decode_answer_updated(&log)
+            .with_context(|| format!("Failed to decode AnswerUpdated for {}", asset_id));
+
+        let (answer_raw, round_id, updated_at) = match decoded {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(
+                    "{} - fallback latestRoundData due to decode error",
+                    e
+                );
+                self.poll_single_feed(asset_id, feed).await?;
+                return Ok(());
+            }
+        };
+
+        if answer_raw <= 0 {
+            tracing::warn!(
+                "Invalid AnswerUpdated value for {} (answer={}) - fallback latestRoundData",
+                asset_id,
+                answer_raw
+            );
+            self.poll_single_feed(asset_id, feed).await?;
+            return Ok(());
+        }
+
+        // Miss detection: nếu round nhảy cóc, fallback latestRoundData để reconcile state.
+        let previous_round = {
+            let cache = self.price_cache.read().await;
+            cache.get(asset_id).map(|p| p.round_id)
+        };
+
+        if let Some(prev_round) = previous_round {
+            if round_id <= prev_round {
+                tracing::debug!(
+                    "Ignoring stale/duplicate Chainlink log for {} (round {} <= cached {})",
+                    asset_id,
+                    round_id,
+                    prev_round
+                );
+                return Ok(());
+            }
+
+            if round_id > prev_round + 1 {
+                tracing::warn!(
+                    "Potential missed rounds for {} (cached {}, incoming {}) - fallback latestRoundData",
+                    asset_id,
+                    prev_round,
+                    round_id
+                );
+                self.poll_single_feed(asset_id, feed).await?;
+                return Ok(());
+            }
+        }
+
+        let decimals = feed.config().decimals;
+        let price_usd = answer_raw as f64 / 10_f64.powi(decimals as i32);
+        let price_data = PriceData {
+            asset_id: asset_id.to_string(),
+            price_usd,
+            price_raw: answer_raw,
+            decimals,
+            round_id,
+            updated_at,
+            fetched_at: chrono::Utc::now().timestamp(),
+            feed_address: feed.feed_address(),
+        };
+
+        self.apply_price_update(asset_id, price_data, "ws-log").await?;
         Ok(())
+    }
+
+    fn decode_answer_updated(log: &Log) -> Result<(i128, u128, u64)> {
+        let tokens = decode(
+            &[
+                ParamType::Int(256),
+                ParamType::Uint(256),
+                ParamType::Uint(256),
+            ],
+            log.data.as_ref(),
+        )?;
+
+        let answer_token = tokens.get(0).ok_or_else(|| anyhow::anyhow!("Missing answer token"))?;
+        let round_token = tokens.get(1).ok_or_else(|| anyhow::anyhow!("Missing roundId token"))?;
+        let updated_token = tokens.get(2).ok_or_else(|| anyhow::anyhow!("Missing updatedAt token"))?;
+
+        let answer_i256 = match answer_token {
+            Token::Int(v) => I256::from_raw(*v),
+            _ => bail!("Unexpected answer token type"),
+        };
+
+        let answer_raw = answer_i256
+            .to_string()
+            .parse::<i128>()
+            .context("Answer value is outside i128 range")?;
+
+        let round_id = match round_token {
+            Token::Uint(v) => v.as_u128(),
+            _ => bail!("Unexpected roundId token type"),
+        };
+
+        let updated_at = match updated_token {
+            Token::Uint(v) => v.as_u64(),
+            _ => bail!("Unexpected updatedAt token type"),
+        };
+
+        Ok((answer_raw, round_id, updated_at))
     }
     
     /// Poll một feed cụ thể
     async fn poll_single_feed(&self, asset_id: &str, feed: &ChainlinkFeed) -> Result<bool> {
         let price_data = feed.latest_price().await?;
-        
+
+        self.apply_price_update(asset_id, price_data, "rpc-latestRoundData").await
+    }
+
+    async fn apply_price_update(&self, asset_id: &str, price_data: PriceData, source: &str) -> Result<bool> {
         // Lấy giá cũ từ cache
         let previous_price = {
             let cache = self.price_cache.read().await;
@@ -386,15 +495,15 @@ impl OracleManager {
                 
                 if deviation >= deviation_threshold {
                     tracing::info!(
-                        "📊 {} price change: ${:.2} → ${:.2} ({:.2}% deviation)",
-                        asset_id, prev, price_data.price_usd, deviation
+                        "📊 {} price change: ${:.2} → ${:.2} ({:.2}% deviation, source={})",
+                        asset_id, prev, price_data.price_usd, deviation, source
                     );
                     true
                 } else {
                     // Log all polled prices for debugging (to see if RPC reflects state changes)
                     tracing::debug!(
-                        "[ORACLE] {} = ${:.2} (deviation: {:.4}% < threshold {:.2}%, no event)",
-                        asset_id, price_data.price_usd, deviation, deviation_threshold
+                        "[ORACLE] {} = ${:.2} (deviation: {:.4}% < threshold {:.2}%, no event, source={})",
+                        asset_id, price_data.price_usd, deviation, deviation_threshold, source
                     );
                     false
                 }
@@ -402,8 +511,8 @@ impl OracleManager {
             None => {
                 // Giá đầu tiên — luôn emit
                 tracing::info!(
-                    "📊 {} initial price: ${:.2}",
-                    asset_id, price_data.price_usd
+                    "📊 {} initial price: ${:.2} (source={})",
+                    asset_id, price_data.price_usd, source
                 );
                 true
             }
@@ -447,6 +556,45 @@ impl OracleManager {
         }
         
         Ok(should_emit)
+    }
+
+    /// Refresh feeds khi cache thiếu hoặc stale (fallback path cho WS-first mode)
+    pub async fn refresh_stale_feeds(&self) -> Result<usize> {
+        let mut refreshed = 0usize;
+
+        for (asset_id, feed) in &self.feeds {
+            let staleness_timeout = self
+                .config
+                .get_feed(asset_id)
+                .map(|f| f.heartbeat_secs)
+                .unwrap_or(self.config.default_staleness_secs);
+
+            let needs_refresh = {
+                let cache = self.price_cache.read().await;
+                match cache.get(asset_id) {
+                    Some(price) => price.is_stale(staleness_timeout),
+                    None => true,
+                }
+            };
+
+            if !needs_refresh {
+                continue;
+            }
+
+            tracing::warn!(
+                "Refreshing {} via latestRoundData (stale/missing cache)",
+                asset_id
+            );
+
+            match self.poll_single_feed(asset_id, feed).await {
+                Ok(_) => refreshed += 1,
+                Err(e) => {
+                    tracing::error!("Failed stale refresh for {}: {:?}", asset_id, e);
+                }
+            }
+        }
+
+        Ok(refreshed)
     }
 
     /// Khi ETH/USD biến động, phát thêm updates cho các assets non-ETH

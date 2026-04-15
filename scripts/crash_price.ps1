@@ -8,7 +8,7 @@
 #   3. Set gia ETH thap hon de HF < 1.0
 #
 # Yeu cau: 
-#   - Anvil dang chay (scripts/start_anvil.ps1)
+#   - Hardhat dang chay (scripts/start_hardhat.ps1)
 #   - Da chay setup_liquidation_scenario.ps1
 #
 # Cach dung:
@@ -52,7 +52,7 @@ $SEPOLIA_CONFIG = @{
     NetworkName             = "Sepolia Testnet"
 }
 
-# Anvil accounts (Account #2 = Borrower, Account #0 = Deployer for gas)
+# Hardhat accounts (Account #2 = Borrower, Account #0 = Deployer for gas)
 $BORROWER      = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
 $BORROWER_KEY  = "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a"
 $DEPLOYER      = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
@@ -68,24 +68,59 @@ function Invoke-Cast {
     $result = Invoke-Expression $cmd 2>&1
     $output = ($result | Out-String).Trim()
 
-    if ($LASTEXITCODE -eq 0) {
-        return $output
-    }
-
-    # Hardhat compatibility: retry `rpc anvil_*` as `rpc hardhat_*`
-    if ($CastArgs -match '^rpc\s+anvil_') {
-        $fallbackArgs = $CastArgs -replace '^rpc\s+anvil_', 'rpc hardhat_'
-        $fallbackCmd = "cast $fallbackArgs --rpc-url $RpcUrl"
-        $fallbackResult = Invoke-Expression $fallbackCmd 2>&1
-        $fallbackOutput = ($fallbackResult | Out-String).Trim()
-
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "  [i] RPC fallback: $CastArgs -> $fallbackArgs" -ForegroundColor DarkGray
-            return $fallbackOutput
-        }
-    }
-
     return $output
+}
+
+function Invoke-CastCall {
+    param([string]$CallArgs)
+
+    $parsed = [regex]::Match($CallArgs, '^(?<to>0x[a-fA-F0-9]{40})\s+"(?<sig>[^"]+)"\s*(?<args>.*)$')
+    if (-not $parsed.Success) {
+        return Invoke-Cast "call $CallArgs"
+    }
+
+    $to = $parsed.Groups['to'].Value
+    $sig = $parsed.Groups['sig'].Value
+    $argsText = $parsed.Groups['args'].Value.Trim()
+
+    if ([string]::IsNullOrWhiteSpace($argsText)) {
+        $calldataOut = & cast calldata $sig 2>&1
+    } else {
+        $argList = $argsText -split '\s+'
+        $calldataOut = & cast calldata $sig @argList 2>&1
+    }
+
+    $calldata = ($calldataOut | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or -not ($calldata -match '^0x[0-9a-fA-F]+$')) {
+        return ""
+    }
+
+    try {
+        $payload = @{
+            jsonrpc = "2.0"
+            id      = 1
+            method  = "eth_call"
+            params  = @(@{ to = $to; data = $calldata }, "latest")
+        } | ConvertTo-Json -Compress
+
+        $resp = Invoke-RestMethod -Uri $RpcUrl -Method Post -Body $payload -ContentType "application/json"
+        $rawHex = $resp.result
+
+        if ([string]::IsNullOrWhiteSpace($rawHex) -or $rawHex -eq "0x") {
+            return ""
+        }
+
+        if ($sig -match '\)\(.*\)$') {
+            $decode = & cast abi-decode $sig $rawHex 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                return ($decode | Out-String).Trim()
+            }
+        }
+
+        return $rawHex
+    } catch {
+        return ""
+    }
 }
 
 function Write-Step {
@@ -180,7 +215,7 @@ $chainIdRaw = Invoke-Expression "cast chain-id --rpc-url $RpcUrl" 2>&1
 $chainId = ($chainIdRaw | Out-String).Trim()
 
 if ([string]::IsNullOrEmpty($chainId) -or $chainId -match "error") {
-    Write-Host "  [X] Khong the ket noi Anvil!" -ForegroundColor Red
+    Write-Host "  [X] Khong the ket noi Hardhat!" -ForegroundColor Red
     exit 1
 }
 
@@ -190,6 +225,9 @@ if ($Network -eq "auto") {
         $Network = "mainnet"
     } elseif ($chainId -eq "11155111") {
         $Network = "sepolia"
+    } elseif ($chainId -eq "31337") {
+        $Network = "mainnet"
+        Write-Host "  [i] Detected local fork chain (31337) - using mainnet addresses" -ForegroundColor DarkGray
     } else {
         Write-Host "  [!] Unknown chain ID: $chainId - defaulting to mainnet config" -ForegroundColor Yellow
         $Network = "mainnet"
@@ -221,7 +259,7 @@ Write-Host "  [i] ETH/USD Feed: $ETH_USD_FEED" -ForegroundColor Gray
 # ============================================================================
 Write-Step "1/5" "Lay gia ETH hien tai"
 
-$ethPriceRaw = Invoke-Cast "call $ETH_USD_FEED `"latestAnswer()(int256)`""
+$ethPriceRaw = Invoke-CastCall "$ETH_USD_FEED `"latestAnswer()(int256)`""
 Write-Host "  [DEBUG] Raw output: '$ethPriceRaw'" -ForegroundColor Gray
 
 $ethPrice = Parse-HexOrDecimal $ethPriceRaw
@@ -229,7 +267,7 @@ $ethPrice = Parse-HexOrDecimal $ethPriceRaw
 # Fallback: thu latestRoundData neu latestAnswer khong tra ve gia
 if ($null -eq $ethPrice -or $ethPrice -eq 0) {
     Write-Host "  [!] latestAnswer tra ve null/0, thu latestRoundData..." -ForegroundColor Yellow
-    $roundData = Invoke-Cast "call $ETH_USD_FEED `"latestRoundData()(uint80,int256,uint256,uint256,uint80)`""
+    $roundData = Invoke-CastCall "$ETH_USD_FEED `"latestRoundData()(uint80,int256,uint256,uint256,uint80)`""
     Write-Host "  [DEBUG] Round data: $roundData" -ForegroundColor Gray
     
     # Parse: co the o dang newline-separated hoac space-separated voi annotations
@@ -242,8 +280,8 @@ if ($null -eq $ethPrice -or $ethPrice -eq 0) {
 
 if ($null -eq $ethPrice -or $ethPrice -eq 0) {
     Write-Host "  [X] Khong doc duoc gia ETH!" -ForegroundColor Red
-    Write-Host "      Kiem tra Anvil da fork mainnet dung chua." -ForegroundColor Yellow
-    Write-Host "      Chay: anvil --fork-url https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY" -ForegroundColor Yellow
+    Write-Host "      Kiem tra Hardhat da fork mainnet dung chua." -ForegroundColor Yellow
+    Write-Host "      Chay: .\scripts\start_hardhat.ps1" -ForegroundColor Yellow
     exit 1
 }
 
@@ -261,7 +299,7 @@ Write-Host "  [CRASH] Gia moi sau khi crash $PriceDrop%: `$$newPriceUSD" -Foregr
 # ============================================================================
 Write-Step "2/5" "Kiem tra Health Factor truoc"
 
-$accountData = Invoke-Cast "call $AAVE_POOL `"getUserAccountData(address)(uint256,uint256,uint256,uint256,uint256,uint256)`" $BORROWER"
+$accountData = Invoke-CastCall "$AAVE_POOL `"getUserAccountData(address)(uint256,uint256,uint256,uint256,uint256,uint256)`" $BORROWER"
 Write-Host "  [i] Borrower Account before crash:" -ForegroundColor Gray
 Write-AccountData $accountData
 
@@ -283,7 +321,7 @@ if ($acctValues.Count -ge 6) {
 Write-Step "3/5" "Get WETH Price Source va Replace Code"
 
 # Get the actual price source Aave uses for WETH
-$wethSourceRaw = Invoke-Cast "call $AAVE_ORACLE `"getSourceOfAsset(address)(address)`" $WETH"
+$wethSourceRaw = Invoke-CastCall "$AAVE_ORACLE `"getSourceOfAsset(address)(address)`" $WETH"
 $WETH_PRICE_SOURCE = ($wethSourceRaw -replace '\[.*?\]', '').Trim()
 
 Write-Host "  [i] Aave WETH Price Source: $WETH_PRICE_SOURCE" -ForegroundColor Cyan
@@ -300,12 +338,12 @@ if (Test-Path $mockJsonPath) {
     $deployedBytecode = $mockJson.deployedBytecode.object
     
     Write-Host "  [>] Replacing $WETH_PRICE_SOURCE code with MockPriceFeed..." -ForegroundColor Gray
-    Invoke-Cast "rpc anvil_setCode $WETH_PRICE_SOURCE $deployedBytecode"
+    Invoke-Cast "rpc hardhat_setCode $WETH_PRICE_SOURCE $deployedBytecode"
     Write-Host "  [OK] Contract code replaced" -ForegroundColor Green
 
     if ($ETH_USD_FEED -ne $WETH_PRICE_SOURCE) {
         Write-Host "  [>] Replacing $ETH_USD_FEED code with MockPriceFeed (for bot oracle worker)..." -ForegroundColor Gray
-        Invoke-Cast "rpc anvil_setCode $ETH_USD_FEED $deployedBytecode"
+        Invoke-Cast "rpc hardhat_setCode $ETH_USD_FEED $deployedBytecode"
         Write-Host "  [OK] ETH/USD feed code replaced" -ForegroundColor Green
     }
 } else {
@@ -314,14 +352,9 @@ if (Test-Path $mockJsonPath) {
 }
 
 # ============================================================================
-# STEP 4: Set Crashed Price via Storage Manipulation
+# STEP 4: Set Crashed Price and Emit Chainlink Event (WS-friendly)
 # ============================================================================
-Write-Step "4/5" "Set Crashed Price truc tiep"
-
-# MockPriceFeed storage layout:
-# Slot 0: _answer (int256)
-# Slot 1: _decimals (uint8)  
-# Slot 2: _roundId (uint80)
+Write-Step "4/5" "Set Crashed Price + emit AnswerUpdated"
 
 $newPriceHex = "0x" + ([Convert]::ToString([long]$newPrice, 16)).PadLeft(64, '0')
 
@@ -330,39 +363,22 @@ if ($ETH_USD_FEED -ne $WETH_PRICE_SOURCE) {
     $targetFeeds += $ETH_USD_FEED
 }
 
-# MockPriceFeed storage layout (Solidity):
-# slot 0: _answer (int256)
-# slot 1: _decimals (uint8)
-# slot 2: _description (string) 
-# slot 3: _version (uint256)
-# slot 4: _roundId (uint80)
-# slot 5: _updatedAt (uint256) ← IMPORTANT: Oracle checks if stale!
-
-# Set slot 5: _updatedAt = block.timestamp (current) so Oracle doesn't mark it STALE
-# Get current block via RPC
-$blockNum = Invoke-Expression "cast block-number --rpc-url $RpcUrl" 2>&1
-$blockData = Invoke-Expression "cast block $blockNum --json --rpc-url $RpcUrl" 2>&1 | ConvertFrom-Json
-$currentTimestamp = [Convert]::ToInt64($blockData.timestamp, 16)
-$timestampHex = "0x" + $currentTimestamp.ToString("X").PadLeft(64, '0')
-
 foreach ($feed in $targetFeeds) {
-    Write-Host "  [>] Setting storage slots on $feed..." -ForegroundColor Gray
+    Write-Host "  [>] Initializing mock feed $feed..." -ForegroundColor Gray
 
-    # Set slot 0: _answer = newPrice
-    Invoke-Cast "rpc anvil_setStorageAt $feed `"0x0000000000000000000000000000000000000000000000000000000000000000`" $newPriceHex"
-    Write-Host "  [OK] Slot 0 (_answer): $newPrice" -ForegroundColor Green
-
-    # Set slot 1: _decimals = 8
-    Invoke-Cast "rpc anvil_setStorageAt $feed `"0x0000000000000000000000000000000000000000000000000000000000000001`" `"0x0000000000000000000000000000000000000000000000000000000000000008`""
+    # Ensure decimals() returns 8 for bot parser.
+    Invoke-Cast "rpc hardhat_setStorageAt $feed `"0x0000000000000000000000000000000000000000000000000000000000000001`" `"0x0000000000000000000000000000000000000000000000000000000000000008`""
     Write-Host "  [OK] Slot 1 (_decimals): 8" -ForegroundColor Green
 
-    # Set slot 4: _roundId = 1 (increment)
-    Invoke-Cast "rpc anvil_setStorageAt $feed `"0x0000000000000000000000000000000000000000000000000000000000000004`" `"0x0000000000000000000000000000000000000000000000000000000000000001`""
-    Write-Host "  [OK] Slot 4 (_roundId): 1" -ForegroundColor Green
-
-    # Set slot 5: _updatedAt = current block timestamp
-    Invoke-Cast "rpc anvil_setStorageAt $feed `"0x0000000000000000000000000000000000000000000000000000000000000005`" $timestampHex"
-    Write-Host "  [OK] Slot 5 (_updatedAt): $currentTimestamp (block timestamp)" -ForegroundColor Green
+    # Update price via function call so AnswerUpdated event is emitted (WS can catch immediately).
+    $setAnswerOutput = Invoke-Cast "send $feed `"setAnswer(int256)`" $newPrice --private-key $DEPLOYER_KEY --gas-limit 5000000 --legacy"
+    if ($setAnswerOutput -match "0x[a-fA-F0-9]{64}") {
+        Write-Host "  [OK] setAnswer emitted AnswerUpdated event" -ForegroundColor Green
+    } else {
+        Write-Host "  [!] setAnswer output khong ro rang, fallback storage slot0" -ForegroundColor Yellow
+        Invoke-Cast "rpc hardhat_setStorageAt $feed `"0x0000000000000000000000000000000000000000000000000000000000000000`" $newPriceHex"
+        Write-Host "  [OK] Fallback slot 0 (_answer): $newPrice" -ForegroundColor Green
+    }
 }
 
 # ============================================================================
@@ -370,7 +386,7 @@ foreach ($feed in $targetFeeds) {
 # ============================================================================
 Write-Host ""
 Write-Host "  [>] Mining new block to ensure price change is reflected..." -ForegroundColor Gray
-Invoke-Cast "rpc anvil_mine 1"
+Invoke-Cast "rpc evm_mine"
 Write-Host "  [OK] Block mined" -ForegroundColor Green
 
 # ============================================================================
@@ -381,7 +397,7 @@ Write-Step "5/5" "Verify gia moi va Health Factor"
 Start-Sleep -Seconds 1
 
 # Check new price from WETH source (the one Aave actually uses)
-$newEthPriceRaw = Invoke-Cast "call $WETH_PRICE_SOURCE `"latestAnswer()(int256)`""
+$newEthPriceRaw = Invoke-CastCall "$WETH_PRICE_SOURCE `"latestAnswer()(int256)`""
 $newEthPriceActual = Parse-HexOrDecimal $newEthPriceRaw
 
 if ($null -ne $newEthPriceActual -and $newEthPriceActual -gt 0) {
@@ -398,7 +414,7 @@ if ($null -ne $newEthPriceActual -and $newEthPriceActual -gt 0) {
 }
 
 # Also verify ETH/USD feed used by Oracle worker
-$workerEthPriceRaw = Invoke-Cast "call $ETH_USD_FEED `"latestAnswer()(int256)`""
+$workerEthPriceRaw = Invoke-CastCall "$ETH_USD_FEED `"latestAnswer()(int256)`""
 $workerEthPrice = Parse-HexOrDecimal $workerEthPriceRaw
 if ($null -ne $workerEthPrice -and $workerEthPrice -gt 0) {
     $workerEthPriceUsd = [math]::Round($workerEthPrice / 1e8, 2)
@@ -406,7 +422,7 @@ if ($null -ne $workerEthPrice -and $workerEthPrice -gt 0) {
 }
 
 # Check new HF
-$accountData = Invoke-Cast "call $AAVE_POOL `"getUserAccountData(address)(uint256,uint256,uint256,uint256,uint256,uint256)`" $BORROWER"
+$accountData = Invoke-CastCall "$AAVE_POOL `"getUserAccountData(address)(uint256,uint256,uint256,uint256,uint256,uint256)`" $BORROWER"
 Write-Host "  [i] Borrower Account AFTER crash:" -ForegroundColor Gray
 Write-AccountData $accountData
 

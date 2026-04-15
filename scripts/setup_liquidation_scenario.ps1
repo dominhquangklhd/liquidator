@@ -2,12 +2,12 @@
 # SETUP LIQUIDATION SCENARIO
 # ============================================================================
 #
-# Script nay tao kich ban liquidation tren Anvil fork:
+# Script nay tao kich ban liquidation tren Hardhat fork:
 #   1. Kiem tra pool USDC liquidity truoc
 #   2. Tinh toan supply WETH vua du de vay gan het USDC trong pool
 #   3. Day HF sat 1.0 de chi can crash gia nhe la liquidatable
 #
-# Yeu cau: Anvil dang chay (scripts/start_anvil.ps1)
+# Yeu cau: Hardhat dang chay (scripts/start_hardhat.ps1)
 #
 # Cach dung:
 #   .\scripts\setup_liquidation_scenario.ps1              # Auto-detect network
@@ -20,6 +20,8 @@ param(
     [ValidateSet("auto", "mainnet", "sepolia")]
     [string]$Network = "auto"
 )
+
+$script:RpcClientFlavor = "unknown"
 
 # ============================================================================
 # NETWORK CONFIGURATION
@@ -57,7 +59,7 @@ $SEPOLIA_CONFIG = @{
     NetworkName             = "Sepolia Testnet"
 }
 
-# Anvil default accounts (tu dong co 10000 ETH)
+# Hardhat default accounts (tu dong co 10000 ETH)
 # Dung Account #2 & #3 de tranh position cu tren Sepolia (Account #0/#1 da co Aave state)
 $BORROWER        = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"  # Account #2
 $BORROWER_KEY    = "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a"
@@ -70,9 +72,54 @@ $LIQUIDATOR_KEY  = "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141
 
 function Invoke-CastCall {
     param([string]$CastArgs)
-    $cmd = "cast call $CastArgs --rpc-url $RpcUrl"
-    $result = Invoke-Expression $cmd 2>&1
-    return ($result | Out-String).Trim()
+    $parsed = [regex]::Match($CastArgs, '^(?<to>0x[a-fA-F0-9]{40})\s+"(?<sig>[^"]+)"\s*(?<args>.*)$')
+    if (-not $parsed.Success) {
+        $cmd = "cast call $CastArgs --rpc-url $RpcUrl"
+        $result = Invoke-Expression $cmd 2>&1
+        return ($result | Out-String).Trim()
+    }
+
+    $to = $parsed.Groups['to'].Value
+    $sig = $parsed.Groups['sig'].Value
+    $argsText = $parsed.Groups['args'].Value.Trim()
+
+    if ([string]::IsNullOrWhiteSpace($argsText)) {
+        $calldataOut = & cast calldata $sig 2>&1
+    } else {
+        $argList = $argsText -split '\s+'
+        $calldataOut = & cast calldata $sig @argList 2>&1
+    }
+
+    $calldata = ($calldataOut | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or -not ($calldata -match '^0x[0-9a-fA-F]+$')) {
+        return "Error: Failed to build calldata for $sig"
+    }
+
+    try {
+        $rpcPayload = @{
+            jsonrpc = "2.0"
+            id      = 1
+            method  = "eth_call"
+            params  = @(@{ to = $to; data = $calldata }, "latest")
+        } | ConvertTo-Json -Compress
+
+        $rpcResp = Invoke-RestMethod -Uri $RpcUrl -Method Post -Body $rpcPayload -ContentType "application/json"
+        $rawHex = $rpcResp.result
+        if ([string]::IsNullOrWhiteSpace($rawHex) -or $rawHex -eq "0x") {
+            return "0"
+        }
+
+        if ($sig -match '\)\(.*\)$') {
+            $decode = & cast abi-decode $sig $rawHex 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                return ($decode | Out-String).Trim()
+            }
+        }
+
+        return $rawHex
+    } catch {
+        return "Error: eth_call failed for $sig"
+    }
 }
 
 function Invoke-CastSend {
@@ -80,6 +127,19 @@ function Invoke-CastSend {
     $cmd = "cast send $CastArgs --rpc-url $RpcUrl"
     $result = Invoke-Expression $cmd 2>&1
     $output = ($result | Out-String).Trim()
+
+    if ($LASTEXITCODE -ne 0) {
+        # Hardhat compatibility: bypass eth_estimateGas by forcing gas limit.
+        $fallbackCmd = "cast send $CastArgs --rpc-url $RpcUrl --gas-limit 5000000 --legacy"
+        $fallbackResult = Invoke-Expression $fallbackCmd 2>&1
+        $fallbackOutput = ($fallbackResult | Out-String).Trim()
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "  [i] TX fallback: force --gas-limit + --legacy" -ForegroundColor DarkGray
+            return $fallbackOutput
+        }
+        $output = $fallbackOutput
+    }
+
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  [X] Transaction FAILED!" -ForegroundColor Red
         # Extract short error message
@@ -94,25 +154,13 @@ function Invoke-CastSend {
 
 function Invoke-CastRpc {
     param([string]$CastArgs)
+
     $cmd = "cast rpc $CastArgs --rpc-url $RpcUrl"
     $result = Invoke-Expression $cmd 2>&1
     $output = ($result | Out-String).Trim()
 
     if ($LASTEXITCODE -eq 0) {
         return $output
-    }
-
-    # Hardhat compatibility: retry with hardhat_* namespace if script used anvil_*
-    if ($CastArgs -match '^anvil_') {
-        $fallbackArgs = $CastArgs -replace '^anvil_', 'hardhat_'
-        $fallbackCmd = "cast rpc $fallbackArgs --rpc-url $RpcUrl"
-        $fallbackResult = Invoke-Expression $fallbackCmd 2>&1
-        $fallbackOutput = ($fallbackResult | Out-String).Trim()
-
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "  [i] RPC fallback: $CastArgs -> $fallbackArgs" -ForegroundColor DarkGray
-            return $fallbackOutput
-        }
     }
 
     return $output
@@ -203,11 +251,34 @@ if (-not (Get-Command "cast" -ErrorAction SilentlyContinue)) {
 $chainIdRaw = Invoke-Expression "cast chain-id --rpc-url $RpcUrl" 2>&1
 $chainId = ($chainIdRaw | Out-String).Trim()
 
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($chainId)) {
+    Write-Host "[X] Khong ket noi duoc RPC: $RpcUrl" -ForegroundColor Red
+    Write-Host "    Hay chay truoc: .\\scripts\\start_hardhat.ps1" -ForegroundColor Yellow
+    exit 1
+}
+
+# Detect RPC client flavor once to avoid noisy unsupported-method fallbacks.
+$clientVersionRaw = Invoke-Expression "cast rpc web3_clientVersion --rpc-url $RpcUrl" 2>&1
+$clientVersion = ($clientVersionRaw | Out-String).Trim().ToLowerInvariant()
+if ($LASTEXITCODE -eq 0) {
+    if ($clientVersion -match "hardhat") {
+        $script:RpcClientFlavor = "hardhat"
+    }
+}
+
+if ($script:RpcClientFlavor -eq "hardhat") {
+    Write-Host "[i] RPC client: Hardhat" -ForegroundColor DarkGray
+}
+
 if ($Network -eq "auto") {
     if ($chainId -eq "1") {
         $Network = "mainnet"
     } elseif ($chainId -eq "11155111") {
         $Network = "sepolia"
+    } elseif ($chainId -eq "31337") {
+        # Hardhat local fork uses 31337 by default.
+        $Network = "mainnet"
+        Write-Host "[i] Detected local fork chain (31337) - using mainnet addresses" -ForegroundColor DarkGray
     } else {
         Write-Host "[!] Unknown chain ID: $chainId - defaulting to mainnet config" -ForegroundColor Yellow
         $Network = "mainnet"
@@ -262,7 +333,7 @@ Write-Host "  [i] ETH price (Aave Oracle): `$$ethPriceUSD" -ForegroundColor Gray
 
 # ── Tinh WETH can supply ──
 # Muc tieu: supply 50 WETH => co du collateral vay ~$80-95k USDC
-# Gioi han hop ly trong 1-50 WETH (Anvil account co 10,000 ETH)
+# Gioi han hop ly trong 1-50 WETH (Hardhat account co 10,000 ETH)
 $ltvRatio = 0.80
 $maxSupplyETH = 50   # Max 50 WETH supply
 
@@ -531,7 +602,7 @@ $balanceSlot = Invoke-Expression "cast index address $LIQUIDATOR $USDC_BALANCE_S
 $balanceSlot = ($balanceSlot | Out-String).Trim()
 # 500,000 USDC = 500000 * 10^6 = 500000000000 = 0x746A528800
 $usdcHex = "0x" + "746A528800".PadLeft(64, '0')
-Invoke-CastRpc "anvil_setStorageAt $USDC $balanceSlot $usdcHex"
+$null = Invoke-CastRpc "hardhat_setStorageAt $USDC $balanceSlot $usdcHex"
 
 # Verify
 $liquidatorUSDC_raw = Invoke-CastCall "$USDC `"balanceOf(address)(uint256)`" $LIQUIDATOR"
@@ -545,12 +616,12 @@ if ($liquidatorUSDC_val -gt 0) {
     Write-Host "  [>] Fallback: impersonate aUSDC de transfer..." -ForegroundColor Yellow
     
     # Impersonate aUSDC contract (holds pool's USDC) and transfer
-    Invoke-CastRpc "anvil_impersonateAccount $aUSDC"
+    Invoke-CastRpc "hardhat_impersonateAccount $aUSDC"
     # Give aUSDC some ETH for gas
-    Invoke-CastRpc "anvil_setBalance $aUSDC 0x56BC75E2D63100000"
+    Invoke-CastRpc "hardhat_setBalance $aUSDC 0x56BC75E2D63100000"
     $transferAmt = [math]::Min($poolUsdcAmount * 0.5, 500000000000).ToString("0")  # min(50% pool, 500k USDC)
     $result = Invoke-CastSend "$USDC `"transfer(address,uint256)`" $LIQUIDATOR $transferAmt --from $aUSDC"
-    Invoke-CastRpc "anvil_stopImpersonatingAccount $aUSDC"
+    Invoke-CastRpc "hardhat_stopImpersonatingAccount $aUSDC"
     
     $liquidatorUSDC_raw = Invoke-CastCall "$USDC `"balanceOf(address)(uint256)`" $LIQUIDATOR"
     $liquidatorUSDC_clean = Strip-CastAnnotation $liquidatorUSDC_raw
@@ -590,9 +661,13 @@ Write-Host "  [OK] Scenario san sang!" -ForegroundColor Green
 # ============================================================================
 Write-Step "7/8" "Tao Snapshot"
 
-$snapshotId = Invoke-CastRpc "anvil_snapshot"
-Write-Host "  [*] Snapshot ID: $snapshotId" -ForegroundColor Green
-Write-Host "  [i] Rollback: cast rpc anvil_revert $snapshotId --rpc-url $RpcUrl" -ForegroundColor Gray
+$snapshotId = Invoke-CastRpc "evm_snapshot"
+if ([string]::IsNullOrWhiteSpace($snapshotId) -or $snapshotId -match '^Error') {
+    Write-Host "  [!] Khong tao duoc snapshot tren node hien tai" -ForegroundColor Yellow
+} else {
+    Write-Host "  [*] Snapshot ID: $snapshotId" -ForegroundColor Green
+    Write-Host "  [i] Rollback: cast rpc evm_revert $snapshotId --rpc-url $RpcUrl" -ForegroundColor Gray
+}
 
 # ============================================================================
 # SUMMARY

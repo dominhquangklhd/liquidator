@@ -50,12 +50,28 @@ pub async fn oracle_chainlink_event_worker(
 ) {
     if let Some(ws_url) = config.chainlink_ws_url.clone() {
         tracing::info!("Oracle Chainlink event worker started in WS mode");
+        let mut attempt: u64 = 0;
 
         loop {
+            if attempt > 0 {
+                match oracle.poll_all().await {
+                    Ok(refreshed) => tracing::warn!(
+                        "WS reconnect fallback: refreshed {} feeds via latestRoundData",
+                        refreshed
+                    ),
+                    Err(e) => tracing::error!(
+                        "WS reconnect fallback polling failed: {:?}",
+                        e
+                    ),
+                }
+            }
+
             match oracle.watch_chainlink_events_ws(&ws_url).await {
                 Ok(_) => tracing::warn!("Oracle Chainlink WS watcher exited unexpectedly"),
                 Err(e) => tracing::error!("Oracle Chainlink WS watcher error: {:?}", e),
             }
+
+            attempt += 1;
 
             tracing::warn!(
                 "Reconnecting Chainlink WS in {}s...",
@@ -173,6 +189,19 @@ pub async fn oracle_health_worker(
     
     loop {
         interval.tick().await;
+
+        // WS-first mode fallback: refresh stale/missing feeds via latestRoundData.
+        match oracle.refresh_stale_feeds().await {
+            Ok(refreshed) => {
+                if refreshed > 0 {
+                    tracing::warn!(
+                        "Oracle stale fallback refreshed {} feeds via latestRoundData",
+                        refreshed
+                    );
+                }
+            }
+            Err(e) => tracing::error!("Oracle stale fallback failed: {:?}", e),
+        }
         
         let feeds = oracle.get_all_feed_info().await;
         let mut issues = Vec::new();

@@ -279,10 +279,16 @@ async fn main() {
                 chainlink_ws_reconnect_delay_secs: env_u64("ORACLE_WS_RECONNECT_DELAY_SECS", 3),
             };
             
-            let price_worker_config = worker_config.clone();
-            tokio::spawn(async move {
-                oracle_price_worker(oracle_for_price, price_worker_config).await;
-            });
+            if worker_config.chainlink_ws_url.is_none() {
+                let price_worker_config = worker_config.clone();
+                tokio::spawn(async move {
+                    oracle_price_worker(oracle_for_price, price_worker_config).await;
+                });
+            } else {
+                tracing::info!(
+                    "Oracle WS-first mode enabled: periodic latestRoundData polling disabled"
+                );
+            }
             
             // 6.2 Oracle Stats Worker — log thống kê định kỳ
             let oracle_for_stats = Arc::clone(&oracle);

@@ -21,8 +21,8 @@ param(
     [string]$ForkProjectPath = "fork-blockchain"
 )
 
-if (-not (Get-Command "npx" -ErrorAction SilentlyContinue)) {
-    Write-Host "[X] npx khong ton tai. Hay cai Node.js truoc!" -ForegroundColor Red
+if (-not (Get-Command "npm" -ErrorAction SilentlyContinue)) {
+    Write-Host "[X] npm khong ton tai. Hay cai Node.js truoc!" -ForegroundColor Red
     exit 1
 }
 
@@ -78,12 +78,18 @@ Write-Host ""
 
 Push-Location $hardhatDir
 try {
-    $hardhatArgs = @("hardhat", "node", "--fork", $RpcUrl, "--port", "$Port")
+    $hardhatArgs = @("node", "--fork", $RpcUrl, "--port", "$Port")
     if ($ForkBlock -gt 0) {
         $hardhatArgs += @("--fork-block-number", "$ForkBlock")
     }
 
-    & npx @hardhatArgs
+    $hardhatBinCmd = Join-Path $hardhatDir "node_modules\.bin\hardhat.cmd"
+    if (Test-Path $hardhatBinCmd) {
+        & $hardhatBinCmd @hardhatArgs
+    } else {
+        Write-Host "[!] Chua co node_modules. Dang dung npm exec de goi hardhat..." -ForegroundColor Yellow
+        & npm exec -- "hardhat" @hardhatArgs
+    }
 } finally {
     Pop-Location
 }

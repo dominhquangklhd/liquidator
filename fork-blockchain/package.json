@@ -1,11 +1,10 @@
 {
   "name": "fork-blockchain",
   "version": "1.0.0",
-  "type": "module",
   "scripts": {
     "fork": "hardhat node"
   },
   "devDependencies": {
-    "hardhat": "^3.3.0"
+    "hardhat": "2.22.17"
   }
 }
