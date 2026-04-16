@@ -299,36 +299,62 @@ async fn fetch_top_users_from_subgraph() -> Result<Vec<Address>> {
         .unwrap_or_else(|_| "https://api.thegraph.com/subgraphs/name/messari/aave-v3-ethereum".to_string());
     let client = Client::new();
 
-    // Try common schema variants used by Aave/community subgraphs.
+    // First try rich account positions query and prefilter likely risky users (HF <= 2)
+    // to reduce expensive on-chain calls during bootstrap.
+    let rich_query = r#"query BootstrapUsersRich {
+        accounts(first: 1000) {
+            id
+            positions(first: 50) {
+                balance
+                market {
+                    liquidationThreshold
+                    inputToken {
+                        decimals
+                        lastPriceUSD
+                    }
+                }
+            }
+        }
+    }"#;
+
+    let rich_body = json!({ "query": rich_query });
+    if let Ok(resp) = client.post(&endpoint).json(&rich_body).send().await {
+        if resp.status().is_success() {
+            if let Ok(value) = resp.json::<Value>().await {
+                if value.get("errors").is_none() {
+                    let prefiltered = parse_prefiltered_accounts_from_positions(&value);
+                    if !prefiltered.is_empty() {
+                        tracing::info!(
+                            "Subgraph prefilter selected {} likely risky users (HF <= 2) from positions",
+                            prefiltered.len()
+                        );
+                        return Ok(prefiltered);
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: common schema variants used by Aave/community subgraphs.
     let queries = [
+        // Schema 1: Aave official (users with borrows)
         r#"query BootstrapUsers {
-            users(
-                where: { healthFactor_lte: \"2\" }
-                orderBy: healthFactor
-                orderDirection: asc
-                first: 100
-            ) {
-                id
-            }
-        }"#,
-        r#"query BootstrapUsers {
-            accounts(
-                where: { healthFactor_lte: \"2\" }
-                orderBy: healthFactor
-                orderDirection: asc
-                first: 100
-            ) {
-                id
-            }
-        }"#,
-        r#"query BootstrapUsers {
-            positions(
-                where: { healthFactor_lte: \"2\" }
-                orderBy: healthFactor
-                orderDirection: asc
-                first: 100
-            ) {
+            borrows(first: 1000, orderBy: blockNumber, orderDirection: desc) {
                 user {
+                    id
+                }
+            }
+        }"#,
+        // Schema 2: Messari (accounts with positions)
+        r#"query BootstrapUsers {
+            accounts(first: 1000, where: { positions_: { balance_gt: "0" } }) {
+                id
+            }
+        }"#,
+        // Schema 3: Positions with balance
+        r#"query BootstrapUsers {
+            positions(first: 1000, where: { balance_gt: "0" }) {
+                account {
                     id
                 }
             }
@@ -349,13 +375,19 @@ async fn fetch_top_users_from_subgraph() -> Result<Vec<Address>> {
         }
 
         let mut out = Vec::new();
+        
+        // Try parsing borrows (user.id nested)
         if let Some(items) = value
             .get("data")
-            .and_then(|d| d.get("users"))
+            .and_then(|d| d.get("borrows"))
             .and_then(|v| v.as_array())
         {
             for item in items {
-                if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
+                if let Some(id) = item
+                    .get("user")
+                    .and_then(|u| u.get("id"))
+                    .and_then(|v| v.as_str())
+                {
                     if let Ok(addr) = id.parse::<Address>() {
                         out.push(addr);
                     }
@@ -363,6 +395,7 @@ async fn fetch_top_users_from_subgraph() -> Result<Vec<Address>> {
             }
         }
 
+        // Try parsing accounts (direct id)
         if out.is_empty() {
             if let Some(items) = value
                 .get("data")
@@ -379,6 +412,7 @@ async fn fetch_top_users_from_subgraph() -> Result<Vec<Address>> {
             }
         }
 
+        // Try parsing positions (account.id nested)
         if out.is_empty() {
             if let Some(items) = value
                 .get("data")
@@ -387,10 +421,27 @@ async fn fetch_top_users_from_subgraph() -> Result<Vec<Address>> {
             {
                 for item in items {
                     if let Some(id) = item
-                        .get("user")
-                        .and_then(|u| u.get("id"))
+                        .get("account")
+                        .and_then(|a| a.get("id"))
                         .and_then(|v| v.as_str())
                     {
+                        if let Ok(addr) = id.parse::<Address>() {
+                            out.push(addr);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Try parsing users (legacy, direct id)
+        if out.is_empty() {
+            if let Some(items) = value
+                .get("data")
+                .and_then(|d| d.get("users"))
+                .and_then(|v| v.as_array())
+            {
+                for item in items {
+                    if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
                         if let Ok(addr) = id.parse::<Address>() {
                             out.push(addr);
                         }
@@ -410,6 +461,115 @@ async fn fetch_top_users_from_subgraph() -> Result<Vec<Address>> {
     }
 
     Ok(Vec::new())
+}
+
+fn parse_prefiltered_accounts_from_positions(value: &Value) -> Vec<Address> {
+    let Some(accounts) = value
+        .get("data")
+        .and_then(|d| d.get("accounts"))
+        .and_then(|v| v.as_array())
+    else {
+        return Vec::new();
+    };
+
+    let mut ranked: Vec<(Address, f64)> = Vec::new();
+
+    for account in accounts {
+        let Some(account_id) = account.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Ok(addr) = account_id.parse::<Address>() else {
+            continue;
+        };
+
+        let Some(positions) = account.get("positions").and_then(|v| v.as_array()) else {
+            continue;
+        };
+
+        let mut total_weighted_collateral_usd = 0.0_f64;
+        let mut total_debt_usd = 0.0_f64;
+
+        for position in positions {
+            let Some(balance_raw) = position.get("balance").and_then(|v| v.as_str()) else {
+                continue;
+            };
+
+            let decimals = position
+                .get("market")
+                .and_then(|m| m.get("inputToken"))
+                .and_then(|t| t.get("decimals"))
+                .and_then(parse_f64_value)
+                .unwrap_or(18.0)
+                .clamp(0.0, 36.0) as i32;
+
+            let price_usd = position
+                .get("market")
+                .and_then(|m| m.get("inputToken"))
+                .and_then(|t| t.get("lastPriceUSD"))
+                .and_then(parse_f64_value)
+                .unwrap_or(0.0);
+
+            if price_usd <= 0.0 {
+                continue;
+            }
+
+            let liquidation_threshold_pct = position
+                .get("market")
+                .and_then(|m| m.get("liquidationThreshold"))
+                .and_then(parse_f64_value)
+                .unwrap_or(0.0)
+                .clamp(0.0, 100.0);
+
+            let Ok(balance_base_units) = balance_raw.parse::<f64>() else {
+                continue;
+            };
+
+            let amount = balance_base_units / 10_f64.powi(decimals);
+            let value_usd = amount.abs() * price_usd;
+
+            if amount > 0.0 {
+                total_weighted_collateral_usd += value_usd * (liquidation_threshold_pct / 100.0);
+            } else if amount < 0.0 {
+                total_debt_usd += value_usd;
+            }
+        }
+
+        if total_debt_usd <= 0.0 {
+            continue;
+        }
+
+        let hf_estimate = total_weighted_collateral_usd / total_debt_usd;
+        if hf_estimate.is_finite() && hf_estimate <= 2.0 {
+            ranked.push((addr, hf_estimate));
+        }
+    }
+
+    ranked.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
+
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for (addr, _) in ranked {
+        if seen.insert(addr) {
+            out.push(addr);
+        }
+        if out.len() >= 200 {
+            break;
+        }
+    }
+
+    out
+}
+
+fn parse_f64_value(value: &Value) -> Option<f64> {
+    if let Some(v) = value.as_f64() {
+        return Some(v);
+    }
+
+    if let Some(s) = value.as_str() {
+        return s.parse::<f64>().ok();
+    }
+
+    None
 }
 
 fn reserve_catalog_from_env(chain_id: u64) -> HashMap<String, Address> {
