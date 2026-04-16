@@ -105,12 +105,28 @@ impl ColdStorage {
                 liquidator TEXT NOT NULL,
                 tx_hash TEXT NOT NULL UNIQUE,
                 profit_usd REAL NOT NULL,
-                gas_cost_usd REAL NOT NULL
+                gas_cost_usd REAL NOT NULL,
+                status TEXT NOT NULL DEFAULT 'success',
+                error_message TEXT
             )
             "#
         )
         .execute(pool)
         .await?;
+
+        // Backward-compatible migration for existing DB files.
+        // Ignore duplicate-column errors if columns already exist.
+        for migration in [
+            "ALTER TABLE liquidations ADD COLUMN status TEXT NOT NULL DEFAULT 'success'",
+            "ALTER TABLE liquidations ADD COLUMN error_message TEXT",
+        ] {
+            if let Err(e) = sqlx::query(migration).execute(pool).await {
+                let msg = e.to_string().to_ascii_lowercase();
+                if !msg.contains("duplicate column name") {
+                    return Err(e.into());
+                }
+            }
+        }
         
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_liquidations_user ON liquidations(user_address)")
             .execute(pool)
@@ -329,8 +345,8 @@ impl ColdStorage {
             INSERT INTO liquidations (
                 user_address, timestamp, collateral_asset, debt_asset,
                 collateral_seized, debt_covered, liquidator, tx_hash,
-                profit_usd, gas_cost_usd
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                profit_usd, gas_cost_usd, status, error_message
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#
         )
         .bind(&event.user_address)
@@ -343,6 +359,8 @@ impl ColdStorage {
         .bind(&event.tx_hash)
         .bind(event.profit_usd)
         .bind(event.gas_cost_usd)
+        .bind(&event.status)
+        .bind(&event.error_message)
         .execute(&self.pool)
         .await?;
         
@@ -418,6 +436,8 @@ struct LiquidationEventRow {
     tx_hash: String,
     profit_usd: f64,
     gas_cost_usd: f64,
+    status: String,
+    error_message: Option<String>,
 }
 
 impl LiquidationEventRow {
@@ -434,6 +454,8 @@ impl LiquidationEventRow {
             tx_hash: self.tx_hash,
             profit_usd: self.profit_usd,
             gas_cost_usd: self.gas_cost_usd,
+            status: self.status,
+            error_message: self.error_message,
         }
     }
 }

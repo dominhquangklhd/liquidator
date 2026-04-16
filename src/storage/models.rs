@@ -136,6 +136,12 @@ pub struct LiquidationEvent {
     
     /// Gas cost in USD
     pub gas_cost_usd: f64,
+
+    /// Transaction/attempt status
+    pub status: String,
+
+    /// Error detail when status=failed
+    pub error_message: Option<String>,
 }
 
 impl LiquidationEvent {
@@ -160,6 +166,8 @@ impl LiquidationEvent {
             tx_hash,
             profit_usd: 0.0,
             gas_cost_usd: 0.0,
+            status: "success".to_string(),
+            error_message: None,
         }
     }
     

@@ -11,6 +11,7 @@ use ethers::types::{Address, U256};
 
 use std::sync::Arc;
 use std::time::Instant;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{interval, Duration};
 
 #[derive(Debug, Clone)]
@@ -452,6 +453,8 @@ async fn handle_result(
             tx_hash: result.tx_hash.unwrap_or_default(),
             profit_usd: result.profit_usd,
             gas_cost_usd: (result.gas_used * result.gas_price) as f64 / 1e18 * 2000.0, // Rough ETH price
+            status: "success".to_string(),
+            error_message: None,
         };
         
         if let Err(e) = storage.record_liquidation(event).await {
@@ -466,6 +469,38 @@ async fn handle_result(
         );
     } else {
         let error_msg = result.error.unwrap_or_else(|| "unknown error".to_string());
+
+        // Persist failed liquidation attempt for troubleshooting/analytics.
+        let synthetic_tx_hash = match &result.tx_hash {
+            Some(tx) if !tx.trim().is_empty() => tx.clone(),
+            _ => {
+                let nanos = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0);
+                format!("failed-{}-{}", target.user_address, nanos)
+            }
+        };
+
+        let failed_event = LiquidationEvent {
+            id: None,
+            user_address: target.user_address.clone(),
+            timestamp: chrono::Utc::now().timestamp(),
+            collateral_asset: target.collateral.keys().next().cloned().unwrap_or_default(),
+            debt_asset: target.debt.keys().next().cloned().unwrap_or_default(),
+            collateral_seized: result.collateral_seized,
+            debt_covered: result.debt_covered,
+            liquidator: "self".to_string(),
+            tx_hash: synthetic_tx_hash,
+            profit_usd: result.profit_usd,
+            gas_cost_usd: (result.gas_used * result.gas_price) as f64 / 1e18 * 2000.0,
+            status: "failed".to_string(),
+            error_message: Some(error_msg.clone()),
+        };
+
+        if let Err(e) = storage.record_liquidation(failed_event).await {
+            tracing::error!("Failed to record failed liquidation attempt: {:?}", e);
+        }
 
         if should_drop_target_after_failure(&error_msg) {
             // On-chain state says user is no longer liquidatable. Remove stale

@@ -70,6 +70,8 @@ pub async fn bootstrap_onchain_state(
         return Ok(());
     }
 
+    let bootstrap_candidate_count = bootstrap_users.len();
+
     let reserve_catalog = reserve_catalog_from_env(chain_id);
     let oracle = BootstrapAaveOracle::new(aave_oracle_address, Arc::clone(&rpc));
 
@@ -144,13 +146,19 @@ pub async fn bootstrap_onchain_state(
 
     let pool = BootstrapAavePool::new(aave_pool_address, Arc::clone(&rpc));
     let mut candidates: Vec<(String, User, LiquidationTarget)> = Vec::new();
+    let mut onchain_read_ok = 0usize;
+    let mut onchain_read_failed = 0usize;
+    let mut hf_le_2_count = 0usize;
 
     for user_addr in bootstrap_users {
         let onchain = pool.get_user_account_data(user_addr).call().await;
         let Ok((total_collateral_base, total_debt_base, _available, current_lt_bps, _ltv, hf_raw)) = onchain else {
             tracing::warn!("Skip bootstrap user {:?}: cannot read account data", user_addr);
+            onchain_read_failed += 1;
             continue;
         };
+
+        onchain_read_ok += 1;
 
         let collateral_usd = u256_to_f64(total_collateral_base) / 1e8;
         let debt_usd = u256_to_f64(total_debt_base) / 1e8;
@@ -218,9 +226,19 @@ pub async fn bootstrap_onchain_state(
         };
 
         if hf <= 2.0 {
+            hf_le_2_count += 1;
             candidates.push((user_id, user, target));
         }
     }
+
+    tracing::info!(
+        "Bootstrap verification: candidates={} onchain_ok={} onchain_failed={} hf<=2={} before_top100={}",
+        bootstrap_candidate_count,
+        onchain_read_ok,
+        onchain_read_failed,
+        hf_le_2_count,
+        candidates.len()
+    );
 
     candidates.sort_by(|a, b| {
         a.2.health_factor
@@ -233,7 +251,13 @@ pub async fn bootstrap_onchain_state(
     }
 
     let mut persisted_targets = Vec::with_capacity(candidates.len());
+    let hot_cache_threshold = storage.hot_cache_threshold();
+    let mut hot_cache_eligible = 0usize;
     for (user_id, user, target) in candidates {
+        if target.health_factor < hot_cache_threshold {
+            hot_cache_eligible += 1;
+        }
+
         if user.collateral.contains_key("WETH") {
             engine
                 .registry
@@ -262,9 +286,11 @@ pub async fn bootstrap_onchain_state(
     }
 
     tracing::info!(
-        "On-chain bootstrap complete: {} assets, {} users loaded (HF <= 2.0, top 100)",
+        "On-chain bootstrap complete: assets={} loaded_users={} hot_cache_eligible={} (threshold={:.2}, HF<=2 top100)",
         assets_loaded,
-        persisted_targets.len()
+        persisted_targets.len(),
+        hot_cache_eligible,
+        hot_cache_threshold
     );
 
     Ok(())
