@@ -1,0 +1,87 @@
+@startuml Oracle Module - Use Case Diagram
+
+skinparam backgroundColor #FAFAFA
+skinparam actorStyle awesome
+skinparam packageStyle rectangle
+skinparam usecase {
+    BackgroundColor #FFF0E6
+    BorderColor #E07B39
+    ArrowColor #E07B39
+}
+skinparam actor {
+    BackgroundColor #E6F7FF
+    BorderColor #1890FF
+}
+
+title <b>Oracle Module</b>\nUse Case Diagram
+
+left to right direction
+
+' ── Actors ──────────────────────────────────────────
+actor "Chainlink\nOn-chain Feed" as Chainlink
+actor "Oracle\nPrice Worker" as PriceWorker
+actor "Oracle\nStats Worker" as StatsWorker
+actor "Oracle\nHealth Worker" as HealthWorker
+actor "Risk Engine\n(Event Consumer)" as RiskEngine
+actor "Profit Calculator\n(Price Consumer)" as ProfitCalc
+
+' ── System boundary ─────────────────────────────────
+rectangle "Oracle Module" {
+
+    usecase "UC-OR01\nKhởi tạo\nPrice Feeds" as UC_OR01
+    usecase "UC-OR02\nĐọc Metadata\nOn-chain" as UC_OR02
+    usecase "UC-OR03\nPoll Giá\nĐịnh Kỳ" as UC_OR03
+    usecase "UC-OR04\nĐọc Latest Round\ntừ Chainlink" as UC_OR04
+    usecase "UC-OR05\nPhát hiện\nPrice Deviation" as UC_OR05
+    usecase "UC-OR06\nEmit PriceUpdate\nEvent" as UC_OR06
+    usecase "UC-OR07\nCập nhật\nPrice Cache" as UC_OR07
+    usecase "UC-OR08\nFallback sang\nCached Price" as UC_OR08
+    usecase "UC-OR09\nKiểm tra\nFeed Health" as UC_OR09
+    usecase "UC-OR10\nĐánh dấu Feed\nStale/Degraded" as UC_OR10
+    usecase "UC-OR11\nBáo cáo\nThống kê" as UC_OR11
+    usecase "UC-OR12\nCung cấp\nPrice Cache" as UC_OR12
+
+}
+
+' ── Relationships ────────────────────────────────────
+PriceWorker  --> UC_OR03
+HealthWorker --> UC_OR09
+StatsWorker  --> UC_OR11
+
+UC_OR01 ..> UC_OR02 : <<include>>
+UC_OR01 ..> UC_OR07 : <<include>>
+
+UC_OR03 ..> UC_OR04 : <<include>>
+UC_OR04 <-- Chainlink : latestRoundData()
+UC_OR04 ..> UC_OR05 : <<include>>
+
+UC_OR05 ..> UC_OR06 : <<extend>>\n[deviation ≥ threshold\nor time elapsed]
+UC_OR05 ..> UC_OR07 : <<include>>
+
+UC_OR04 ..> UC_OR08 : <<extend>>\n[feed error]
+
+UC_OR06 --> RiskEngine : Event::PriceUpdate
+UC_OR07 ..> UC_OR12 : <<include>>
+UC_OR12 --> ProfitCalc : đọc price_cache
+
+UC_OR09 ..> UC_OR10 : <<extend>>\n[price stale\n> 3600s]
+
+note right of UC_OR05
+  <b>Deviation Detection:</b>
+  |new_price - cached| / cached
+  ≥ 0.5% → phát PriceUpdate event
+
+  Hoặc thời gian từ lần cập nhật
+  cuối > poll_interval × 2 
+end note
+
+note bottom of UC_OR08
+  <b>Fallback Strategy:</b>
+  Khi Chainlink call fail:
+  1. Dùng giá cuối từ cache
+  2. Tăng error_count
+  3. Nếu error liên tiếp > N:
+     → Đánh dấu feed Degraded
+end note
+
+@enduml

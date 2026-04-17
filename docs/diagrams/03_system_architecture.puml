@@ -1,0 +1,60 @@
+@startuml  
+skinparam backgroundColor #FFFFFF
+skinparam packageStyle rectangle
+skinparam componentStyle rectangle
+
+skinparam component {
+    BackgroundColor #E2EAF4
+    BorderColor #2C3E50
+    ArrowColor #2C3E50
+    FontName Arial
+}
+
+skinparam database {
+    BackgroundColor #FFF9E6
+    BorderColor #F57F17
+    FontName Arial
+}
+
+title "Kiến trúc tổng thể của Hệ thống Thanh lý (Event-Driven)"
+
+cloud "Mạng lưới Blockchain\n(Ethereum / Local Fork)" as Blockchain {
+}
+
+package "Event Ingestion & Routing" {
+    component "Provider Layer\n(Lắng nghe RPC/WSS)"  as Provider
+    component "Oracle Manager\n(Cập nhật giá)" as Oracle
+    queue "Event Dispatcher\n(MPSC Channels)" as EventBus
+}
+
+package "Core Processing Pipeline" {
+    component "Risk Engine\n(Đánh giá Health Factor)" as Risk
+    component "Profit Calculator\n(Tính phí Gas & Lợi nhuận)" as Profit
+    component "Strategy Decider\n(Quyết định Direct / Skip)" as Strategy
+}
+
+package "Execution & Persistence" {
+    component "Liquidation Executor\n(Ký & Gửi Broadcast Tx)" as Executor
+    database "Storage\n(SQLite + Thống kê)" as Storage
+}
+
+' Data flow lines
+Blockchain --> Provider : Sự kiện Hợp đồng
+Blockchain --> Oracle : Thông tin Giá
+
+Provider --> EventBus : Đẩy sự kiện thô
+Oracle --> EventBus : Sự kiện giá mới
+
+EventBus --> Risk : Điều phối (Non-blocking)
+
+Risk --> Profit : Tài khoản có HF < 1.0
+Profit --> Strategy : Biên biên lợi nhuận
+Strategy --> Executor : Execution Plan (Direct)
+
+Executor --> Blockchain : Giao dịch Thanh lý
+Executor --> Storage : Trạng thái lệnh
+
+Risk <..> Storage : Lưu/Đọc trạng thái
+Strategy ..> Storage : Ghi log chiến lược
+
+@enduml

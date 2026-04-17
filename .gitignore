@@ -17,9 +17,6 @@
 /cache
 /out
 
-# Ignore documentation files
-/docs
-
 # Node dependencies
 /node_modules/
 /fork-blockchain/node_modules/

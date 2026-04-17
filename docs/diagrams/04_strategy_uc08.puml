@@ -1,0 +1,34 @@
+@startuml
+skinparam packageStyle rectangle
+skinparam backgroundColor #FFFFFF
+skinparam usecase {
+    BackgroundColor #E2EAF4
+    BorderColor #2C3E50
+    ArrowColor #2C3E50
+    FontName Arial
+}
+
+left to right direction
+
+actor "Hệ thống thanh lý tự động\n(Liquidator Bot)" as Bot
+
+rectangle "UC: Lựa chọn cặp tài sản" {
+    
+    usecase "Lựa chọn cặp tài sản\nThế chấp/Nợ tối ưu nhất" as UC08
+    
+    usecase "Tạo tổ hợp các cặp\nThế chấp & Nợ hợp lệ" as Sub1
+    usecase "Chấm điểm đa biến\n(Multi-factor scoring)" as Sub2
+    
+    usecase "Loại bỏ tổ hợp rủi ro" as Ext1
+}
+
+Bot --> UC08
+
+' Nghiệp vụ cốt lõi bắt buộc
+UC08 ..> Sub1 : <<include>>
+UC08 ..> Sub2 : <<include>>
+
+' Mở rộng ngoại lệ
+Ext1 .up.> UC08 : <<extend>>\n(Trượt giá quá lớn hoặc token phụ)
+
+@enduml

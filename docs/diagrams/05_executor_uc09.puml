@@ -1,0 +1,38 @@
+@startuml
+skinparam packageStyle rectangle
+skinparam backgroundColor #FFFFFF
+skinparam usecase {
+    BackgroundColor #E2EAF4
+    BorderColor #2C3E50
+    ArrowColor #2C3E50
+    FontName Arial
+}
+
+left to right direction
+
+actor "Hệ thống thanh lý tự động\n(Liquidator Bot)" as Bot
+actor "Nhà cung cấp RPC\n(Mạng lưới Blockchain)" as RPC
+
+rectangle "UC: Thực thi giao dịch thanh lý" {
+    
+    usecase "Mã hóa và Ký gửi giao dịch\n(Execute Transaction)" as UC09
+    
+    usecase "Mô phỏng giao dịch nội bộ\n(Simulate Call)" as Sub1
+    usecase "Ký bằng Private Key\n(Sign Payload)" as Sub2
+    
+    usecase "Thực thi giả lập (Dry Run)" as Ext1
+    usecase "Hủy gửi giao dịch thất bại" as Ext2
+}
+
+Bot --> UC09
+UC09 --> RPC : "Pub giao dịch\nlên Mempool"
+
+' Cốt lõi của việc gửi tx thành công phụ thuộc vào giả lập và ký tay
+UC09 ..> Sub1 : <<include>>
+UC09 ..> Sub2 : <<include>>
+
+' Mở rộng ngoại lệ chặn giao dịch
+Ext1 .up.> UC09 : <<extend>>\n(Hệ thống đang chạy chế độ ảo)
+Ext2 .up.> UC09 : <<extend>>\n(Sub1 mô phỏng trả về lỗi Revert)
+
+@enduml

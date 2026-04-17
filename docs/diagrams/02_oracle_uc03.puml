@@ -1,0 +1,37 @@
+@startuml
+skinparam packageStyle rectangle
+skinparam backgroundColor #FFFFFF
+skinparam usecase {
+    BackgroundColor #E2EAF4
+    BorderColor #2C3E50
+    ArrowColor #2C3E50
+    FontName Arial
+}
+
+left to right direction
+
+actor "Hệ thống thanh lý tự động\n(Liquidator Bot)" as Bot
+actor "Nhà cung cấp RPC\n(Alchemy qua HTTP)" as RPC
+
+rectangle "UC: Truy vấn Nguồn cấp giá" {
+    
+    usecase "Truy vấn giá trị tài sản\ntừ Chainlink Oracle" as UC03
+    
+    usecase "Thực hiện lệnh đọc\nSmart Contract" as Sub1
+    usecase "Cập nhật giá mới\nvào bộ nhớ đệm (Cache)" as Sub2
+    
+    usecase "Thử gọi lại với độ trễ\n(Retry Logic)" as Ext1
+}
+
+Bot --> UC03
+
+RPC --> UC03 : "Phản hồi Payload chứa\ngiá trị định mức"
+
+' Các nghiệp vụ chính cần thực hiện
+UC03 ..> Sub1 : <<include>>
+UC03 ..> Sub2 : <<include>>
+
+' Mở rộng xử lý ngoại lệ (như đề cập trong bảng)
+Ext1 .up.> UC03 : <<extend>>\n(Lỗi truy xuất RPC / Quá tải)
+
+@enduml

@@ -1,0 +1,126 @@
+@startuml System Overview - Architecture Diagram
+
+skinparam backgroundColor #FAFAFA
+skinparam componentStyle rectangle
+skinparam component {
+    BackgroundColor #EEF7FF
+    BorderColor #2D7DD2
+    ArrowColor #2D7DD2
+}
+
+title <b>Liquidator System</b>\nKiến trúc tổng thể — Component Diagram
+
+' ─── External ──────────────────────────────────────
+cloud "Blockchain\n(Aave / ETH)" as Chain {
+    component "Aave Pool\nContract" as AavePool
+    component "Chainlink\nPrice Feeds" as Chainlink
+    component "ERC20\nTokens" as ERC20
+}
+
+' ─── Provider Layer ────────────────────────────────
+package "Provider Layer" #E8F5E9 {
+    component "AaveProvider\n(RPC Client)" as Provider
+    component "Block Watcher" as BlockW
+    component "Aave Event\nWatcher" as EventW
+}
+
+' ─── Event Bus ────────────────────────────────────
+package "Event Bus (MPSC Channel)" #FFF3CD {
+    queue "Event Channel\n(PriceUpdate | Block\n| MempoolTx)" as EventCh
+}
+
+' ─── Oracle Module ─────────────────────────────────
+package "Oracle Module" #FFF0E6 {
+    component "OracleManager" as OM
+    component "ChainlinkFeed\n(per asset)" as CF
+    component "Oracle Workers\n(price / stats / health)" as OW
+    database "Price Cache\n(RwLock)" as PCache
+}
+
+' ─── Risk Engine ──────────────────────────────────
+package "Risk Engine" #F0FFF0 {
+    component "RiskEngine\n(Event Loop)" as RE
+    component "HealthFactor\nCalculator" as HFC
+    component "RiskBucket\nClassifier" as RBC
+    database "User/Asset\nRegistry (DashMap)" as Registry
+}
+
+' ─── Storage ──────────────────────────────────────
+package "Storage Module" #FFF9E6 {
+    database "HotCache\n(In-memory, Top 100)" as HotCache
+    database "ColdStorage\n(SQLite)" as SQLite
+    component "Sync Worker\n(5s flush)" as SyncW
+}
+
+' ─── Profit Module ─────────────────────────────────
+package "Profit Module" #F0FFF4 {
+    component "ProfitCalculator" as PC
+    component "GasEstimator" as GE
+}
+
+' ─── Strategy Module ──────────────────────────────
+package "Strategy Module" #FBF0FF {
+    component "StrategyDecider" as SD
+    component "CircuitBreaker" as CB
+}
+
+' ─── Executor Module ──────────────────────────────
+package "Executor Module" #FFF0F0 {
+    component "LiquidationExecutor" as LE
+    component "NonceManager" as NM
+    component "Executor Worker\n(100ms loop)" as EW
+    component "Stats Worker" as StatsW
+}
+
+' ─── Connections ──────────────────────────────────
+Provider --> Chain : JSON-RPC
+BlockW   --> EventCh : Event::Block
+EventW   --> EventCh : Aave Events
+Provider --> BlockW
+Provider --> EventW
+
+Chainlink --> CF : latestRoundData()
+CF        --> OM
+OM        --> OW
+OW        --> PCache
+OW        --> EventCh : Event::PriceUpdate
+
+EventCh --> RE : recv()
+RE        --> HFC
+RE        --> RBC
+RE        --> Registry
+RE        --> HotCache : upsert_target()
+
+HotCache --> SyncW
+SyncW    --> SQLite : batch upsert (5s)
+
+EW --> HotCache : get_top_targets()
+EW --> PC       : evaluate()
+PC --> PCache   : read prices
+GE --> Chain    : eth_gasPrice()
+
+EW --> SD : create_execution_plan()
+SD --> CB
+
+EW --> LE : execute_liquidation()
+LE --> NM
+LE --> ERC20   : approve()
+LE --> AavePool : liquidationCall()
+LE --> SQLite   : record event
+
+note bottom of EventCh
+  MPSC Channel (buffer = 100)
+  Producers: Oracle, Block Watcher,
+             Event Watcher
+  Consumer:  Risk Engine (single)
+end note
+
+note bottom of HotCache
+  Kiến trúc Hybrid:
+  • HotCache: <b>fast</b> (< 1ms)
+    cho Executor Worker
+  • SQLite: <b>persistent</b>
+    cho lịch sử & analytics
+end note
+
+@enduml

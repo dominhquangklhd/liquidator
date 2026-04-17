@@ -1,0 +1,188 @@
+@startuml Executor Module - Sequence Diagram
+
+skinparam backgroundColor #FAFAFA
+skinparam sequenceMessageAlign center
+skinparam sequence {
+    ArrowColor #E74C3C
+    LifeLineBorderColor #E74C3C
+    ParticipantBorderColor #E74C3C
+    ParticipantBackgroundColor #FFF0F0
+    BoxBackgroundColor #F5F5F5
+    BoxBorderColor #CCCCCC
+}
+
+title <b>Executor Module</b>\nSequence Diagram — Vòng lặp Executor Worker
+
+' ── Participants ─────────────────────────────────────
+box "Executor Worker Loop" #FFF8E7
+    participant "executor_worker\n(async loop)" as EW
+end box
+
+box "Storage Layer" #F0F8FF
+    participant "HybridStorage\n(HotCache)" as Storage
+end box
+
+box "Evaluation" #F0FFF4
+    participant "ProfitCalculator" as PC
+end box
+
+box "Executor Module" #FFF0F0
+    participant "LiquidationExecutor" as LE
+    participant "NonceManager" as NM
+end box
+
+box "Blockchain" #F5F0FF
+    participant "ERC20\nToken Contract" as ERC20
+    participant "Aave Pool\nContract" as Aave
+    participant "Ethereum\nNode (RPC)" as Node
+end box
+
+box "Storage (History)" #F5F5F5
+    participant "ColdStorage\n(SQLite)" as DB
+end box
+
+' ── Main Loop ─────────────────────────────────────────
+[-> EW : Spawn executor_worker(executor, storage,\n               config, profit_calc)
+activate EW
+EW -> EW : ticker = interval(100ms)
+
+loop Mỗi 100ms
+
+    EW -> EW : ticker.tick().await
+
+    EW -> Storage : get_top_targets(batch_size=10)
+    activate Storage
+    Storage -> EW  : Vec<LiquidationTarget> (sorted by HF ASC)
+    deactivate Storage
+
+    alt Không có target
+        EW -> EW : continue
+    end
+
+    EW -> EW : Filter: targets với HF < 1.0
+
+    loop Với mỗi target_i (HF < 1.0)
+
+        ' === Profit Evaluation ===
+        EW -> PC : evaluate(&target_i).await
+        activate PC
+        PC -> PC : [xem Profit Sequence Diagram]
+        PC -> EW  : ProfitEstimate { is_profitable, net_profit, best_pair, ... }
+        deactivate PC
+
+        alt is_profitable = false
+            EW -> EW : log DEBUG "Skip: {reason}"
+            EW -> EW : continue → target kế tiếp
+        end
+
+        ' === On-chain Validation ===
+        EW -> LE : validate_target_onchain(&target_i).await
+        activate LE
+        LE -> Aave : getUserAccountData(user_address)
+        activate Aave
+        Aave -> LE  : (totalCollateral, totalDebt, ..., healthFactor)
+        deactivate Aave
+
+        alt HF on-chain ≥ 1.0 (đã được liquidate bởi người khác)
+            LE -> EW : Err("Target no longer liquidatable")
+            EW -> Storage : remove_target(user_address)
+            EW -> EW    : continue
+        end
+        deactivate LE
+
+        ' === Nonce Management ===
+        EW -> LE : execute_liquidation(&target_i, &estimate).await
+        activate LE
+
+        LE -> NM : get_and_increment().await
+        activate NM
+        NM -> Node : eth_getTransactionCount(wallet, "pending")
+        Node -> NM  : pending_nonce: u64
+        NM -> NM    : in-memory nonce = max(pending, local+1)
+        NM -> LE    : nonce: u64
+        deactivate NM
+
+        ' === ERC20 Approve ===
+        LE -> LE  : Kiểm tra current allowance
+        LE -> ERC20 : allowance(wallet, aave_pool)
+        activate ERC20
+        ERC20 -> LE  : current_allowance: U256
+        deactivate ERC20
+
+        alt Allowance không đủ
+            LE -> ERC20 : approve(aave_pool, debt_amount)
+            activate ERC20
+            ERC20 -> Node : eth_sendRawTransaction(approve_tx)
+            Node  -> ERC20 : tx_hash
+            ERC20 -> LE    : tx confirmed
+            deactivate ERC20
+        end
+
+        ' === Execute (Direct) ===
+        alt estimate.method = Direct
+            note over LE
+              <b>Direct Liquidation:</b>
+              Gọi AavePool.liquidationCall()
+              với signer của liquidator bot
+            end note
+
+            LE -> Aave : liquidationCall(\n  collateralAsset,\n  debtAsset,\n  user,\n  debtToCover,\n  receiveAToken=false\n)
+            activate Aave
+            Aave -> Node : eth_sendRawTransaction
+            Node -> Aave : tx_hash
+            Aave -> LE   : tx_hash: String
+            deactivate Aave
+
+        else estimate.method = FlashLoan
+            note over LE
+              <b>Flash Loan Liquidation:</b>
+              1. Gọi flash loan contract
+              2. Trong callback: thực hiện liquidation
+              3. Trả lại flash amount + 0.05% fee
+              (Future work)
+            end note
+            LE -> Node : send flash loan tx
+        end
+
+        ' === Wait for Receipt ===
+        LE -> Node : eth_getTransactionReceipt(tx_hash)
+        note over LE, Node
+          Polling mỗi 500ms
+          Timeout: 60 giây
+        end note
+
+        alt Tx thành công (status = 1)
+            Node -> LE : receipt { gasUsed, blockNumber, ... }
+
+            LE -> LE : LiquidationResult::success(\n  tx_hash, gas_used, gas_price,\n  collateral_seized, debt_covered,\n  profit_usd\n)
+
+            LE -> DB : record LiquidationEvent {\n  user_address, tx_hash,\n  collateral_seized_usd,\n  debt_covered_usd,\n  profit_usd, gas_cost,\n  timestamp\n}
+
+            LE -> Storage : remove_target(user_address)
+            note right of Storage
+              Xóa khỏi HotCache vì
+              đã được xử lý
+            end note
+
+        else Tx thất bại (status = 0 hoặc timeout)
+            Node -> LE : Error / revert
+            LE -> LE   : LiquidationResult::failed(error)
+            LE -> NM   : reset / re-sync nonce
+            note over LE
+              Ghi lại failure event
+              Strategy Decider sẽ
+              tăng consecutive_failures
+            end note
+        end
+
+        LE -> LE : stats.total_attempts += 1\nstats.success/failed_count
+        LE -> EW : LiquidationResult
+        deactivate LE
+
+    end ' loop targets
+
+end ' loop 100ms
+
+deactivate EW
+
+@enduml

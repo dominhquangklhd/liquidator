@@ -1,0 +1,135 @@
+@startuml Storage Module - Sequence Diagram
+
+skinparam backgroundColor #FAFAFA
+skinparam sequenceMessageAlign center
+skinparam sequence {
+    ArrowColor #D4A017
+    LifeLineBorderColor #D4A017
+    ParticipantBorderColor #D4A017
+    ParticipantBackgroundColor #FFF9E6
+    BoxBackgroundColor #F5F5F5
+    BoxBorderColor #CCCCCC
+}
+
+title <b>Storage Module (Hybrid Storage)</b>\nSequence Diagram — Read/Write & Sync Flow
+
+' ── Participants ─────────────────────────────────────
+box "Writers" #F0FFF4
+    participant "Risk Engine" as RE
+    participant "Executor Worker" as EW
+end box
+
+box "HybridStorage" #FFF9E6
+    participant "HybridStorage" as HS
+    participant "HotCache\n(RwLock<Vec>)" as HC
+    participant "SyncWorker\n(background)" as SyncW
+end box
+
+box "Persistence" #F0F0FF
+    participant "ColdStorage\n(SQLite)" as DB
+end box
+
+' ── Phase 1: Initialization ──────────────────────────
+== Giai đoạn 1: Khởi tạo ==
+
+[-> HS : HybridStorage::new().await
+activate HS
+HS -> DB : ColdStorage::new("liquidator.db").await
+activate DB
+DB -> DB : CREATE TABLE IF NOT EXISTS\n  liquidation_targets (...)\n  liquidation_events (...)\n  historical_snapshots (...)
+DB -> HS  : Ok(ColdStorage)
+deactivate DB
+
+HS -> HC : HotCache::new(capacity=100, threshold=1.2)
+HS -> SyncW : spawn_sync_worker()
+note right of SyncW : Chạy ngầm, flush mỗi 5 giây
+[<-- HS : Arc<HybridStorage>
+deactivate HS
+
+== Giai đoạn 2: Risk Engine ghi LiquidationTarget ==
+
+RE -> HS : upsert_target(LiquidationTarget {\n  user_address: "0xABCD...",\n  health_factor: 0.95,\n  total_collateral_usd: 5000.0,\n  total_debt_usd: 4000.0,\n  risk_score: 8,\n  ...\n}).await
+activate HS
+
+HS -> HC : write_lock().await
+activate HC
+HC -> HC : Tìm vị trí target theo user_address\n→ update nếu có, insert nếu chưa có
+HC -> HC : Re-sort by health_factor ASC\n(user với HF thấp nhất ở đầu)
+HC -> HC : Giữ chỉ Top 100\n(xóa bớt cuối nếu vượt capacity)
+HC -> HS  : Ok(())
+deactivate HC
+
+HS -> RE : Ok(())
+deactivate HS
+
+note right of HC
+  Hot Cache luôn giữ
+  top 100 targets với
+  HF thấp nhất = nguy hiểm nhất
+end note
+
+== Giai đoạn 3: Executor Worker đọc top targets ==
+
+EW -> HS : get_top_targets(n=10).await
+activate HS
+HS -> HC : read_lock().await
+activate HC
+HC -> HC : Trả về 10 phần tử đầu tiên\n(đã sorted by HF ASC)
+HC -> HS  : Vec<LiquidationTarget> (10 items)
+deactivate HC
+HS -> EW  : Vec<LiquidationTarget>
+deactivate HS
+
+note over EW
+  Executor nhận danh sách targets
+  đã được sắp xếp theo mức độ nguy hiểm.
+  Target đầu tiên = cần xử lý gấp nhất.
+end note
+
+== Giai đoạn 4: Executor ghi LiquidationEvent ==
+
+EW -> HS : record_liquidation_event(LiquidationEvent {\n  user_address: "0xABCD...",\n  tx_hash: "0x1234...",\n  collateral_seized_usd: 525.0,\n  debt_covered_usd: 500.0,\n  profit_usd: 12.5,\n  gas_cost_usd: 2.1,\n  success: true,\n  timestamp: now()\n}).await
+activate HS
+HS -> DB : INSERT INTO liquidation_events (...)
+activate DB
+DB -> HS  : Ok(())
+deactivate DB
+HS -> EW  : Ok(())
+deactivate HS
+
+EW -> HS : remove_target("0xABCD...")
+activate HS
+HS -> HC : write_lock → xóa target
+deactivate HS
+
+== Giai đoạn 5: Sync Worker định kỳ flush ==
+
+loop Mỗi 5 giây
+    SyncW -> HC : read_lock().await
+    activate HC
+    HC    -> SyncW : snapshot: Vec<LiquidationTarget>
+    deactivate HC
+
+    SyncW -> DB : BEGIN TRANSACTION
+
+    loop Với mỗi target trong snapshot
+        SyncW -> DB : INSERT OR REPLACE INTO\n  liquidation_targets (...)
+    end
+
+    SyncW -> DB : COMMIT
+    activate DB
+    DB    -> SyncW : Ok(()) — N rows upserted
+    deactivate DB
+
+    SyncW -> SyncW : log DEBUG "Synced N targets to DB"
+end
+
+note over SyncW, DB
+  Sync Worker đảm bảo:
+  1. Hot Cache luôn có data mới nhất (fast reads)
+  2. SQLite luôn được backup (persistence)
+  3. Không block Risk Engine hay Executor Worker
+     (chỉ cần read lock ngắn)
+end note
+
+@enduml

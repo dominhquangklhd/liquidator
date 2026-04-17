@@ -1,0 +1,145 @@
+@startuml Profit Module - Sequence Diagram
+
+skinparam backgroundColor #FAFAFA
+skinparam sequenceMessageAlign center
+skinparam sequence {
+    ArrowColor #27AE60
+    LifeLineBorderColor #27AE60
+    ParticipantBorderColor #27AE60
+    ParticipantBackgroundColor #F0FFF4
+    BoxBackgroundColor #F5F5F5
+    BoxBorderColor #CCCCCC
+}
+
+title <b>Profit Module</b>\nSequence Diagram — evaluate(target) Flow
+
+' ── Participants ─────────────────────────────────────
+box "Caller" #FFF8E7
+    participant "Executor\nWorker" as EW
+end box
+
+box "Profit Module" #F0FFF4
+    participant "ProfitCalculator\n.evaluate()" as PC
+    participant "GasEstimator" as GE
+end box
+
+box "Shared State" #F0F4FF
+    participant "Oracle\nPrice Cache\n(RwLock)" as Cache
+end box
+
+' ── Main Flow ─────────────────────────────────────────
+EW -> PC : evaluate(&target)
+activate PC
+
+' Step 1: Check HF
+note over PC
+  Bước 1: Kiểm tra điều kiện cơ bản
+end note
+PC -> PC : Nếu target.health_factor ≥ 1.0\n→ return Err(unprofitable)
+
+' Step 2: Get prices
+PC -> Cache : read_lock().await
+activate Cache
+Cache -> PC  : HashMap<String, PriceData>
+deactivate Cache
+
+note over PC
+  Bước 2: Lấy giá từ Oracle cache
+  VD: { "ETH": $2450, "USDC": $1.0, "WBTC": $63000 }
+end note
+
+' Step 3: Find all viable pairs
+PC -> PC : Duyệt qua mọi kết hợp\n(collateral_asset, debt_asset)
+
+loop Với mỗi cặp (collateral_i, debt_j)
+
+    PC -> PC : Kiểm tra collateral_i > 0 &&\ndebt_j > 0
+    PC -> PC : Tính debt_to_cover:\n  min(total_debt × 0.5, max_cover)
+
+    note over PC
+      <b>Gross Profit Calculation:</b>
+      bonus = collateral_bonus[collateral_i]  (VD: ETH = 5%)
+      collateral_received = debt_to_cover × (1 + bonus)
+      gross_profit = collateral_received - debt_to_cover
+                   = debt_to_cover × bonus%
+    end note
+
+    PC -> PC : gross_profit = debt_to_cover × bonus
+
+    note over PC
+      <b>Slippage Calculation:</b>
+      base_slippage = 0.5% (config)
+      size_impact   = debt_usd / 1_000_000 × 1%
+      total_slippage = base + size_impact
+      slippage_cost  = collateral_received × total_slippage
+    end note
+
+    PC -> PC : slippage_cost = collateral_received × slippage%
+
+    PC -> PC : pair_score = gross_profit × (1 - slippage%) - gas_estimate
+    PC -> PC : Lưu cặp vào viable_pairs với score
+
+end
+
+' Step 4: Select best pair
+PC -> PC : Sort viable_pairs by score (DESC)
+PC -> PC : best_pair = viable_pairs[0]
+note over PC
+  Bước 4: Chọn cặp tối ưu có
+  score cao nhất
+end note
+
+' Step 5: Gas cost
+PC -> GE : estimate_gas_price().await
+activate GE
+GE -> GE : provider.get_gas_price()
+GE -> PC  : gas_price_gwei: u64  (VD: 20 gwei)
+deactivate GE
+
+PC -> PC : gas_limit = 350_000 (direct)\n         450_000 (flash loan)
+PC -> PC : gas_eth   = gas_price × gas_limit
+PC -> PC : gas_usd   = gas_eth × eth_price_usd
+
+' Step 6: Flash loan fee (conditional)
+alt Flash Loan được sử dụng
+    PC -> PC : flash_fee = debt_to_cover × 0.0005 (0.05%)
+else Direct Liquidation
+    PC -> PC : flash_fee = 0.0
+end
+
+' Step 7: Net profit
+PC -> PC : net_profit = gross_profit\n           - gas_usd\n           - slippage_cost\n           - flash_fee
+
+note over PC
+  <b>Bước 7: Tính Net Profit</b>
+  net = gross − gas − slippage − flash_fee
+end note
+
+' Step 8: Decision
+alt net_profit ≥ min_profit_usd ($5) AND ROI ≥ 1%
+    PC -> PC : Mark as PROFITABLE
+    note over PC
+      is_profitable = true
+      roi = net / debt_to_cover × 100%
+    end note
+else Không đủ lợi nhuận
+    PC -> PC : Mark as UNPROFITABLE\nreason = "Net profit $X < threshold"
+end
+
+' Step 9: Update stats
+PC -> PC : stats.total_evaluations += 1\nstats.profitable_count / unprofitable_count\nstats.total_estimated_profit += net
+
+' Return
+PC -> EW : ProfitEstimate {\n  is_profitable,\n  best_pair: LiquidationPair,\n  gross_profit_usd,\n  net_profit_usd,\n  gas_cost_usd,\n  slippage_usd,\n  roi_pct,\n  breakdown: ProfitBreakdown\n}
+deactivate PC
+
+note over EW
+  Executor Worker dùng ProfitEstimate
+  để quyết định có thực hiện
+  liquidation hay không.
+
+  Nếu is_profitable = false → SKIP
+  Nếu is_profitable = true  → thực hiện
+end note
+
+@enduml

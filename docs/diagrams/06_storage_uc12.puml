@@ -1,0 +1,44 @@
+@startuml
+skinparam packageStyle rectangle
+skinparam backgroundColor #FFFFFF
+skinparam usecase {
+    BackgroundColor #E2EAF4
+    BorderColor #2C3E50
+    ArrowColor #2C3E50
+    FontName Arial
+}
+
+left to right direction
+
+actor "Liquidator Bot" as Bot
+actor "The Graph" as Graph
+actor "RPC Provider" as RPC
+
+rectangle "UC: Khởi tạo hệ thống" {
+
+    usecase "Khởi tạo và đồng bộ\ntrạng thái hệ thống" as UC12
+
+    usecase "Truy vấn danh sách\nvị thế rủi ro" as Sub1
+    usecase "Đánh giá sơ bộ\nvà lọc vị thế" as Sub2
+    usecase "Truy vấn trạng thái\non-chain thực tế" as Sub3
+    usecase "Tổng hợp, xếp hạng & nạp\nvào Risk Engine và Storage" as Sub4
+
+    usecase "Sử dụng dữ liệu DB\nhoặc danh sách dự phòng" as Ext1
+    usecase "Loại bỏ địa chỉ\nkhông thể xác thực" as Ext2
+}
+
+Bot --> UC12
+Graph --> UC12 : "Trả về danh sách ví"
+RPC --> UC12 : "Trả về trạng thái on-chain\nvà giá tài sản (Oracle)"
+
+' Các luồng sự kiện chính
+UC12 ..> Sub1 : <<include>>
+UC12 ..> Sub2 : <<include>>
+UC12 ..> Sub3 : <<include>>
+UC12 ..> Sub4 : <<include>>
+
+' Các luồng ngoại lệ / thay thế
+Ext1 .down.> UC12 : <<extend>>\n(The Graph không khả dụng)
+Ext2 .down.> UC12 : <<extend>>\n(Lỗi truy vấn on-chain)
+
+@enduml

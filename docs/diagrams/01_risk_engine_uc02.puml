@@ -1,0 +1,37 @@
+@startuml
+skinparam packageStyle rectangle
+skinparam backgroundColor #FFFFFF
+skinparam usecase {
+    BackgroundColor #E2EAF4
+    BorderColor #2C3E50
+    ArrowColor #2C3E50
+    FontName Arial
+}
+
+left to right direction
+
+actor "Hệ thống thanh lý tự động\n(Liquidator Bot)" as Bot
+actor "Nhà cung cấp RPC\n(Alchemy qua WS)" as RPC
+
+rectangle "UC: Lọc và tìm kiếm mục tiêu" {
+    
+    usecase "Lọc tài khoản có\nnguy cơ thanh lý" as UC02
+    usecase "Tính toán chỉ số\nHealth Factor" as UC01
+    
+    usecase "Cập nhật danh sách\nmục tiêu thanh lý (DB)" as Ext1
+    usecase "Loại bỏ tài khoản\nkhỏi danh sách rủi ro" as Ext2
+}
+
+Bot --> UC02
+
+' Sự kiện WebSockets được đẩy từ Alchemy về con Bot
+RPC --> UC02 : "Đẩy sự kiện On-chain\n(Giá, Vay/Trả)"
+
+' Nghiệp vụ bắt buộc: Tính toán lại HF cho tài khoản bị ảnh hưởng
+UC02 ..> UC01 : <<include>>
+
+' Mở rộng kết quả tùy toán học
+Ext1 .up.> UC02 : <<extend>>\n(Tính ra HF < 1.0)
+Ext2 .up.> UC02 : <<extend>>\n(Tính ra HF >= 1.0)
+
+@enduml

@@ -1,0 +1,97 @@
+@startuml Storage Module - Use Case Diagram
+
+skinparam backgroundColor #FAFAFA
+skinparam actorStyle awesome
+skinparam packageStyle rectangle
+skinparam usecase {
+    BackgroundColor #FFF9E6
+    BorderColor #D4A017
+    ArrowColor #D4A017
+}
+skinparam actor {
+    BackgroundColor #EEF7FF
+    BorderColor #2D7DD2
+}
+
+title <b>Storage Module (Hybrid Storage)</b>\nUse Case Diagram
+
+left to right direction
+
+' ── Actors ──────────────────────────────────────────
+actor "Risk Engine" as RE
+actor "Executor\nWorker" as EW
+actor "Sync\nWorker" as SW
+
+' ── System boundary ─────────────────────────────────
+rectangle "Storage Module (HybridStorage)" {
+
+    rectangle "Hot Cache Layer\n(In-memory)" {
+        usecase "UC-ST01\nGhi Target\nvào Hot Cache\n(upsert)" as UC_ST01
+        usecase "UC-ST02\nĐọc Top N\nTargets (< 1ms)" as UC_ST02
+        usecase "UC-ST03\nXóa Target\nkhỏi Cache" as UC_ST03
+        usecase "UC-ST04\nSắp xếp Targets\ntheo HF (ASC)" as UC_ST04
+        usecase "UC-ST05\nGiới hạn Cache\nkích thước (Top 100)" as UC_ST05
+    }
+
+    rectangle "Cold Storage Layer\n(SQLite)" {
+        usecase "UC-ST06\nLưu trữ tất cả\nLiquidation Targets" as UC_ST06
+        usecase "UC-ST07\nGhi\nLiquidationEvent\n(lịch sử)" as UC_ST07
+        usecase "UC-ST08\nTruy vấn lịch sử\ntheo địa chỉ user" as UC_ST08
+        usecase "UC-ST09\nGhi Historical\nSnapshot" as UC_ST09
+    }
+
+    rectangle "Sync Layer" {
+        usecase "UC-ST10\nFlush Hot Cache\n→ SQLite (mỗi 5s)" as UC_ST10
+        usecase "UC-ST11\nKhởi động\nSync Worker" as UC_ST11
+    }
+
+}
+
+' ── Relationships ────────────────────────────────────
+RE --> UC_ST01
+EW --> UC_ST02
+EW --> UC_ST03
+EW --> UC_ST07
+SW --> UC_ST10
+
+UC_ST01 ..> UC_ST04 : <<include>>
+UC_ST04 ..> UC_ST05 : <<include>>
+UC_ST05 ..> UC_ST06 : <<extend>>\n[async sync]
+
+UC_ST10 ..> UC_ST06 : <<include>>
+UC_ST11 ..> UC_ST10 : <<include>>
+
+note right of UC_ST02
+  <b>HotCache:</b>
+  - In-memory Vec<LiquidationTarget>
+  - Sorted by health_factor ASC
+  - Top N = 100 targets
+  - Access time: < 1ms
+  - Thread-safe: RwLock
+end note
+
+note right of UC_ST07
+  <b>LiquidationEvent record:</b>
+  • user_address
+  • tx_hash
+  • collateral_asset / debt_asset
+  • collateral_seized_usd
+  • debt_covered_usd
+  • profit_usd
+  • gas_cost_usd
+  • timestamp
+  • success: bool
+end note
+
+note bottom of UC_ST10
+  <b>Sync Strategy:</b>
+  Mỗi 5 giây, Sync Worker:
+  1. Lock hot cache (read)
+  2. Batch upsert vào SQLite
+  3. Giải phóng lock
+  
+  Đảm bảo persistence mà không
+  block executor worker
+end note
+
+@enduml

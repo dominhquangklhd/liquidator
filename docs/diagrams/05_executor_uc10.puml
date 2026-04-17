@@ -1,0 +1,36 @@
+@startuml
+skinparam packageStyle rectangle
+skinparam backgroundColor #FFFFFF
+skinparam usecase {
+    BackgroundColor #E2EAF4
+    BorderColor #2C3E50
+    ArrowColor #2C3E50
+    FontName Arial
+}
+
+left to right direction
+
+actor "Hệ thống thanh lý tự động\n(Liquidator Bot)" as Bot
+actor "Nhà cung cấp RPC\n(Mạng lưới Blockchain)" as RPC
+
+rectangle "UC: Quản lý vòng đời giao dịch" {
+    
+    usecase "Quản lý Nonce và\nTheo dõi trạng thái" as UC10
+    
+    usecase "Cấp phát Nonce tăng dần\ntừ ví người ký" as Sub1
+    usecase "Theo dõi giao dịch\ntrong Mempool" as Sub2
+    
+    usecase "Tái thiết lập Nonce" as Ext1
+}
+
+Bot --> UC10
+RPC --> UC10 : "Cung cấp sự kiện Pending\nvà biên lai Hash"
+
+' Gắn chặt để giao dịch ko bị đụng độ nonce và biết đc kết quả
+UC10 ..> Sub1 : <<include>>
+UC10 ..> Sub2 : <<include>>
+
+' Mở rộng nếu kẹt mempool hoặc transaction underpriced
+Ext1 .up.> UC10 : <<extend>>\n(Hệ thống báo Nonce Congested)
+
+@enduml

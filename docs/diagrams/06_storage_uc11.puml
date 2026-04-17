@@ -1,0 +1,37 @@
+@startuml
+skinparam packageStyle rectangle
+skinparam backgroundColor #FFFFFF
+skinparam usecase {
+    BackgroundColor #E2EAF4
+    BorderColor #2C3E50
+    ArrowColor #2C3E50
+    FontName Arial
+}
+
+left to right direction
+
+actor "Hệ thống thanh lý tự động\n(Liquidator Bot)" as Bot
+actor "Nhà cung cấp RPC\n(Mạng lưới Blockchain)" as RPC
+
+rectangle "UC: Đồng bộ dữ liệu Lưu trữ" {
+
+    usecase "Đồng bộ trạng thái dữ liệu\nvề cơ sở dữ liệu cục bộ" as UC11
+
+    usecase "Truy vấn trạng thái mới\nnhất trên Blockchain" as Sub1
+    usecase "Ghi đè dữ liệu vào\nHybridStorage (DB/Cache)" as Sub2
+
+    usecase "Dọn dẹp bản ghi\nđã hết hạn (Cleanup)" as Ext1
+}
+
+Bot --> UC11
+
+RPC --> UC11 : "Trả về kết quả truy vấn\n(Số dư, giá, khoản vay)"
+
+' Các nghiệp vụ lưu trữ cơ bản
+UC11 ..> Sub1 : <<include>>
+UC11 ..> Sub2 : <<include>>
+
+' Dọn dẹp tùy chỉnh khi DB quá phình to
+Ext1 .up.> UC11 : <<extend>>\n(Kích hoạt dọn dẹp theo chu kỳ bộ nhớ)
+
+@enduml

@@ -1,0 +1,36 @@
+@startuml
+skinparam packageStyle rectangle
+skinparam backgroundColor #FFFFFF
+skinparam usecase {
+    BackgroundColor #E2EAF4
+    BorderColor #2C3E50
+    ArrowColor #2C3E50
+    FontName Arial
+}
+
+left to right direction
+
+actor "Hệ thống thanh lý tự động\n(Liquidator Bot)" as Bot
+
+rectangle "UC: Đánh giá và Quyết định" {
+    
+    usecase "Đánh giá toàn diện và\nra quyết định thanh lý" as UC07
+    
+    usecase "Kiểm tra giới hạn an toàn\n(Circuit Breaker, Gas)" as Sub1
+    usecase "Phân bổ luồng thực thi\n(Execution Plan)" as Sub2
+    
+    usecase "Chọn Direct liquidation" as Ext1
+    usecase "Bỏ qua mục tiêu (Skip)" as Ext2
+}
+
+Bot --> UC07
+
+' Các nghiệp vụ lõi bắt buộc
+UC07 ..> Sub1 : <<include>>
+UC07 ..> Sub2 : <<include>>
+
+' Mở rộng tùy thuộc trạng thái ví và giới hạn an toàn
+Ext1 .up.> UC07 : <<extend>>\n(Đủ vốn + đủ debt token)
+Ext2 .up.> UC07 : <<extend>>\n(Thiếu token, debt lớn, hoặc phí Gas quá cao)
+
+@enduml
