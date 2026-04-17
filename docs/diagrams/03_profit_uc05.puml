@@ -1,0 +1,38 @@
+@startuml
+skinparam packageStyle rectangle
+skinparam backgroundColor #FFFFFF
+skinparam usecase {
+    BackgroundColor #E2EAF4
+    BorderColor #2C3E50
+    ArrowColor #2C3E50
+    FontName Arial
+}
+
+left to right direction
+
+actor "Liquidator Bot" as Bot
+actor "RPC Provider" as RPC
+
+rectangle "UC: Cập nhật phí Gas" {
+    
+    usecase "Cập nhật phí Gas\ntại thời điểm hiện tại" as UC05
+    
+    usecase "Yêu cầu trạng thái Block\nvà phí cơ sở (Base Fee)" as Sub1
+    usecase "Truy xuất tỷ giá Native\ntừ Oracle Cache" as Sub2
+    usecase "Tính toán tổng chi phí\nmạng lưới (USD)" as Sub3
+    
+    usecase "Sử dụng Gas Price Legacy\n(Mặc định)" as Ext1
+}
+
+Bot --> UC05
+RPC --> UC05 : "Phản hồi dữ liệu khối\nvà base_fee_per_gas"
+
+' Các luồng sự kiện chính
+UC05 ..> Sub1 : <<include>>
+UC05 ..> Sub2 : <<include>>
+UC05 ..> Sub3 : <<include>>
+
+' Các luồng ngoại lệ / thay thế
+Ext1 .down.> UC05 : <<extend>>\n(Mạng không hỗ trợ EIP-1559)
+
+@enduml

@@ -10,29 +10,29 @@ skinparam usecase {
 
 left to right direction
 
-actor "Hệ thống thanh lý tự động\n(Liquidator Bot)" as Bot
-actor "Nhà cung cấp RPC\n(Alchemy qua WS)" as RPC
+actor "Liquidator Bot" as Bot
+actor "RPC Provider" as RPC
 
-rectangle "UC: Lắng nghe biến động Giá" {
+rectangle "UC: Lắng nghe sự kiện" {
     
-    usecase "Lắng nghe cập nhật\ngiá theo thời gian thực" as UC04
+    usecase "Lắng nghe sự kiện và\ncập nhật biến động giá" as UC04
     
-    usecase "Đăng ký lắng nghe sự kiện\n(WebSocket Subscription)" as Sub1
-    usecase "Phát tín hiệu PriceUpdate\ncho Risk Engine" as Sub2
+    usecase "Thiết lập bộ lọc sự kiện\n(WebSockets Subscription)" as Sub1
+    usecase "Nhận và giải mã\nlog dữ liệu thô" as Sub2
+    usecase "Phát luồng sự kiện giá\ncho Risk Engine" as Sub3
     
-    usecase "Khôi phục đường truyền\nđăng ký sự kiện" as Ext1
+    usecase "Kết nối lại và dùng\ngiá trị lưu tạm" as Ext1
 }
 
 Bot --> UC04
+RPC --> UC04 : "Đẩy Log sự kiện giá\nqua WebSockets"
 
-' Sự kiện WebSockets được đẩy thẳng từ Node
-RPC --> UC04 : "Đẩy sự kiện (Event Logs)\ntừ Smart Contract"
-
-' Các nghiệp vụ lõi để flow thời gian thực hoạt động
+' Các luồng sự kiện chính
 UC04 ..> Sub1 : <<include>>
 UC04 ..> Sub2 : <<include>>
+UC04 ..> Sub3 : <<include>>
 
-' Xử lý luồng ngoại lệ mạng
-Ext1 .up.> UC04 : <<extend>>\n(Trường hợp bị đứt luồng WS)
+' Các luồng ngoại lệ / thay thế
+Ext1 .down.> UC04 : <<extend>>\n(Đứt luồng / Sập WebSockets)
 
 @enduml

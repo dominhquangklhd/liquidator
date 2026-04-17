@@ -10,28 +10,31 @@ skinparam usecase {
 
 left to right direction
 
-actor "Hệ thống thanh lý tự động\n(Liquidator Bot)" as Bot
-actor "Nhà cung cấp RPC\n(Mạng lưới Blockchain)" as RPC
+actor "Liquidator Bot" as Bot
+actor "RPC Provider" as RPC
 
 rectangle "UC: Đồng bộ dữ liệu Lưu trữ" {
 
-    usecase "Đồng bộ trạng thái dữ liệu\nvề cơ sở dữ liệu cục bộ" as UC11
+    usecase "Đồng bộ hóa và duy trì\ntính nhất quán dữ liệu" as UC11
 
-    usecase "Truy vấn trạng thái mới\nnhất trên Blockchain" as Sub1
-    usecase "Ghi đè dữ liệu vào\nHybridStorage (DB/Cache)" as Sub2
+    usecase "Tiếp nhận và trích xuất\ndữ liệu thực thể" as Sub1
+    usecase "Chuẩn hóa dữ liệu\ntheo định dạng nội bộ" as Sub2
+    usecase "Cập nhật dữ liệu vào\nHybrid Storage" as Sub3
 
-    usecase "Dọn dẹp bản ghi\nđã hết hạn (Cleanup)" as Ext1
+    usecase "Khởi chạy dọn dẹp định kỳ\n(Storage Optimization)" as Ext1
+    usecase "Ghi nhận lỗi và thử lại\n(Retry)" as Ext2
 }
 
 Bot --> UC11
+RPC --> UC11 : "Cung cấp thay đổi trạng thái\ntừ mạng lưới blockchain"
 
-RPC --> UC11 : "Trả về kết quả truy vấn\n(Số dư, giá, khoản vay)"
-
-' Các nghiệp vụ lưu trữ cơ bản
+' Các luồng sự kiện chính
 UC11 ..> Sub1 : <<include>>
 UC11 ..> Sub2 : <<include>>
+UC11 ..> Sub3 : <<include>>
 
-' Dọn dẹp tùy chỉnh khi DB quá phình to
-Ext1 .up.> UC11 : <<extend>>\n(Kích hoạt dọn dẹp theo chu kỳ bộ nhớ)
+' Các luồng ngoại lệ / thay thế
+Ext1 .down.> UC11 : <<extend>>\n(Đạt ngưỡng lưu trữ/Suy giảm hiệu suất)
+Ext2 .down.> UC11 : <<extend>>\n(Lỗi ghi dữ liệu vào lưu trữ)
 
 @enduml

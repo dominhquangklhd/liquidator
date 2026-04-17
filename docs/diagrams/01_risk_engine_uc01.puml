@@ -10,21 +10,27 @@ skinparam usecase {
 
 left to right direction
 
-actor "Hệ thống thanh lý tự động\n(Liquidator Bot)" as Bot
+actor "Liquidator Bot" as Bot
 
-rectangle "UC: Tính toán hệ số sức khỏe" {
+rectangle "UC: Quản lý hệ số sức khỏe" {
     
-    usecase "Tính toán chỉ số\nHealth Factor (HF)" as UC01
+    usecase "Quản lý hệ số sức khỏe\ncủa vị thế (HF)" as UC01
     
-    usecase "Lấy thông tin số dư\n(Nợ & Thế chấp)" as Sub1
-    usecase "Lấy thông tin giá\ntài sản hiện tại" as Sub2
+    usecase "Quy đổi tổng giá trị\nthế chấp * ngưỡng thanh lý" as Sub1
+    usecase "Quy đổi tổng giá trị\ntài sản nợ" as Sub2
+    usecase "Đánh giá nợ và chia\nđể ra kết quả HF" as Sub3
     
+    usecase "Bỏ qua tài sản\nvà tiếp tục tính toán" as Ext1
 }
 
 Bot --> UC01
 
-' Các nghiệp vụ bắt buộc phải có để tính được HF
+' Các luồng sự kiện chính
 UC01 ..> Sub1 : <<include>>
 UC01 ..> Sub2 : <<include>>
+UC01 ..> Sub3 : <<include>>
+
+' Các luồng ngoại lệ / thay thế
+Ext1 .down.> UC01 : <<extend>>\n(Thiếu dữ liệu giá tài sản trong Cache)
 
 @enduml

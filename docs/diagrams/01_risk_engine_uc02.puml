@@ -10,28 +10,31 @@ skinparam usecase {
 
 left to right direction
 
-actor "Hệ thống thanh lý tự động\n(Liquidator Bot)" as Bot
-actor "Nhà cung cấp RPC\n(Alchemy qua WS)" as RPC
+actor "Liquidator Bot" as Bot
+actor "RPC Provider" as RPC
 
-rectangle "UC: Lọc và tìm kiếm mục tiêu" {
+rectangle "UC: Tìm kiếm vị thế rủi ro" {
     
-    usecase "Lọc tài khoản có\nnguy cơ thanh lý" as UC02
-    usecase "Tính toán chỉ số\nHealth Factor" as UC01
+    usecase "Tìm kiếm các vị thế\ncó nguy cơ bị thanh lý" as UC02
     
-    usecase "Cập nhật danh sách\nmục tiêu thanh lý (DB)" as Ext1
-    usecase "Loại bỏ tài khoản\nkhỏi danh sách rủi ro" as Ext2
+    usecase "Lắng nghe sự kiện biến động\n(Giá, số dư vay/thế chấp)" as Sub1
+    usecase "Khoanh vùng tài khoản\nbị ảnh hưởng" as Sub2
+    usecase "Gọi thực thi UC01\n(Tính lại điểm rủi ro)" as Sub3
+    usecase "Cập nhật tài khoản nguy hiểm\nvào CSDL mục tiêu" as Sub4
+    
+    usecase "Xóa tài khoản khỏi danh sách\n(Tài khoản đã an toàn)" as Ext1
 }
 
 Bot --> UC02
+RPC --> UC02 : "Đẩy sự kiện biến động\ntrạng thái qua WebSocket"
 
-' Sự kiện WebSockets được đẩy từ Alchemy về con Bot
-RPC --> UC02 : "Đẩy sự kiện On-chain\n(Giá, Vay/Trả)"
+' Các luồng sự kiện chính
+UC02 ..> Sub1 : <<include>>
+UC02 ..> Sub2 : <<include>>
+UC02 ..> Sub3 : <<include>>
+UC02 ..> Sub4 : <<include>>
 
-' Nghiệp vụ bắt buộc: Tính toán lại HF cho tài khoản bị ảnh hưởng
-UC02 ..> UC01 : <<include>>
-
-' Mở rộng kết quả tùy toán học
-Ext1 .up.> UC02 : <<extend>>\n(Tính ra HF < 1.0)
-Ext2 .up.> UC02 : <<extend>>\n(Tính ra HF >= 1.0)
+' Các luồng ngoại lệ / thay thế
+Ext1 .down.> UC02 : <<extend>>\n(HF >= 1.0 trở lại)
 
 @enduml

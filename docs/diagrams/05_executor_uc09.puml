@@ -10,29 +10,31 @@ skinparam usecase {
 
 left to right direction
 
-actor "Hệ thống thanh lý tự động\n(Liquidator Bot)" as Bot
-actor "Nhà cung cấp RPC\n(Mạng lưới Blockchain)" as RPC
+actor "Liquidator Bot" as Bot
+actor "RPC Provider" as RPC
 
 rectangle "UC: Thực thi giao dịch thanh lý" {
     
-    usecase "Mã hóa và Ký gửi giao dịch\n(Execute Transaction)" as UC09
+    usecase "Chuẩn bị và gửi\ngiao dịch thanh lý" as UC09
     
-    usecase "Mô phỏng giao dịch nội bộ\n(Simulate Call)" as Sub1
-    usecase "Ký bằng Private Key\n(Sign Payload)" as Sub2
+    usecase "Kiểm tra ràng buộc\nvà tạo Payload" as Sub1
+    usecase "Mô phỏng thực thi\n(Estimate Gas)" as Sub2
+    usecase "Ký và gửi giao dịch" as Sub3
     
-    usecase "Thực thi giả lập (Dry Run)" as Ext1
-    usecase "Hủy gửi giao dịch thất bại" as Ext2
+    usecase "Khởi chạy giả lập\n(Dry-Run)" as Ext1
+    usecase "Hủy do lỗi mô phỏng/\nThiếu điều kiện" as Ext2
 }
 
 Bot --> UC09
-UC09 --> RPC : "Pub giao dịch\nlên Mempool"
+UC09 --> RPC : "Phát tán giao dịch"
 
-' Cốt lõi của việc gửi tx thành công phụ thuộc vào giả lập và ký tay
+' Các luồng sự kiện chính
 UC09 ..> Sub1 : <<include>>
 UC09 ..> Sub2 : <<include>>
+UC09 ..> Sub3 : <<include>>
 
-' Mở rộng ngoại lệ chặn giao dịch
-Ext1 .up.> UC09 : <<extend>>\n(Hệ thống đang chạy chế độ ảo)
-Ext2 .up.> UC09 : <<extend>>\n(Sub1 mô phỏng trả về lỗi Revert)
+' Các luồng ngoại lệ / thay thế
+Ext1 .down.> UC09 : <<extend>>\n(Chế độ giả lập mở)
+Ext2 .down.> UC09 : <<extend>>\n(Mô phỏng Revert / Thiếu Gas / Lỗi RPC)
 
 @enduml

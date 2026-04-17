@@ -10,28 +10,29 @@ skinparam usecase {
 
 left to right direction
 
-actor "Hệ thống thanh lý tự động\n(Liquidator Bot)" as Bot
-actor "Nhà cung cấp RPC\n(Alchemy qua HTTP)" as RPC
+actor "Liquidator Bot" as Bot
+actor "RPC Provider" as RPC
 
-rectangle "UC: Truy vấn Nguồn cấp giá" {
+rectangle "UC: Truy vấn giá tài sản" {
     
-    usecase "Truy vấn giá trị tài sản\ntừ Chainlink Oracle" as UC03
+    usecase "Truy vấn và lấy giá\ntài sản từ Blockchain" as UC03
     
-    usecase "Thực hiện lệnh đọc\nSmart Contract" as Sub1
-    usecase "Cập nhật giá mới\nvào bộ nhớ đệm (Cache)" as Sub2
+    usecase "Mã hóa lệnh gọi\ntới Smart Contract" as Sub1
+    usecase "Gửi Request Call định kỳ\nqua RPC Provider" as Sub2
+    usecase "Xử lý tỷ giá (Decimals) và\nlưu vào Oracle Cache" as Sub3
     
-    usecase "Thử gọi lại với độ trễ\n(Retry Logic)" as Ext1
+    usecase "Áp dụng khoảng nghỉ\nvà gọi lại (Retry)" as Ext1
 }
 
 Bot --> UC03
+RPC --> UC03 : "Phản hồi Payload chứa\nchỉ số giá trị tài sản"
 
-RPC --> UC03 : "Phản hồi Payload chứa\ngiá trị định mức"
-
-' Các nghiệp vụ chính cần thực hiện
+' Các luồng sự kiện chính
 UC03 ..> Sub1 : <<include>>
 UC03 ..> Sub2 : <<include>>
+UC03 ..> Sub3 : <<include>>
 
-' Mở rộng xử lý ngoại lệ (như đề cập trong bảng)
-Ext1 .up.> UC03 : <<extend>>\n(Lỗi truy xuất RPC / Quá tải)
+' Các luồng ngoại lệ / thay thế
+Ext1 .down.> UC03 : <<extend>>\n(Lỗi truy xuất RPC / Timeouts)
 
 @enduml
