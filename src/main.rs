@@ -35,7 +35,7 @@ use crate::bootstrap::onchain::bootstrap_onchain_state;
 /// Hệ thống giám sát và thanh lý các vị thế có rủi ro trên Aave Protocol
 /// 
 /// ## Kiến trúc:
-/// 1. Provider Layer: Kết nối với blockchain (RPC)
+/// 1. RPC Provider: Kết nối với blockchain (RPC)
 /// 2. Event Watchers: Theo dõi blocks và Aave events
 /// 3. Risk Engine: Tính toán health factor và phát hiện vị thế rủi ro
 /// 4. Event Channel: Truyền tải events giữa các components (MPSC channel)

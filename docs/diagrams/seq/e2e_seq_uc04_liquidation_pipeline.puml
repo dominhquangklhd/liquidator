@@ -1,0 +1,68 @@
+﻿@startuml
+title UC04: Chiến dịch thực thi thanh lý trọn gói
+
+participant "Event Dispatcher" as DP
+participant "Profit Calculator" as Profit
+participant "Strategy Decider" as Strategy
+participant "Liquidation Executor" as Executor
+actor "RPC Provider" as RPC
+participant "Storage Layer" as Storage
+
+note over DP: Kích hoạt khi cảnh báo hệ số sức khỏe < 1.0
+activate DP
+
+== Đánh giá lộ trình kinh tế ==
+DP -> Profit: Yêu cầu tính lợi nhuận cho ví mục tiêu
+activate Profit
+Profit -> Profit: Tính toán phần thưởng thanh lý từ hợp đồng
+Profit -> Profit: Ước tính chi phí trượt giá và phí mạng lưới
+
+alt Lợi nhuận ròng thỏa mãn ngưỡng
+    Profit --> DP: Lợi nhuận hợp lệ
+else Không có lời hoặc lỗ vốn
+    Profit --> DP: Bỏ qua mục tiêu
+end
+deactivate Profit
+
+== Lập chiến lược thanh khoản ==
+DP -> Strategy: Dữ liệu và hạn mức cần thanh khoản
+activate Strategy
+Strategy -> Strategy: So khớp cặp vay và thế chấp
+Strategy -> Strategy: Tìm đường đi tối ưu cho giao dịch mượn nhanh
+Strategy -> Strategy: Đóng gói tham số xử lý
+Strategy --> DP: Phản hồi lệnh sẵn sàng chuyển tiếp
+deactivate Strategy
+
+== Ký gửi và đẩy thông tin lên chuỗi ==
+DP -> Executor: Điều phối giao dịch thanh lý
+deactivate DP
+activate Executor
+
+Executor -> Executor: Xin cấp phát khóa định danh tuần tự
+Executor -> Executor: Ký ví bằng khóa bảo mật
+Executor -> RPC: Gửi tín hiệu thực thi thanh lý
+activate RPC
+
+note left of Executor: Bảo mật front-running và trượt phí
+loop Giám sát trạng thái định kỳ
+    RPC --> Executor: Trả về trạng thái xử lý
+    
+    alt Giao dịch bị kẹt
+        Executor -> Executor: Đẩy chênh phí gas cao hơn hoặc rút lui
+    else Trạng thái lỗi
+        Executor -> Storage: Lưu lịch sử và nguyên nhân lỗi
+        activate Storage
+        Storage --> Executor: Ghi nhận cảnh báo
+        deactivate Storage
+    else Trạng thái thành công
+        Executor -> Storage: Lưu thông tin lợi nhuận thu về
+        activate Storage
+        Storage --> Executor: Ghi nhận vào cơ sở dữ liệu
+        deactivate Storage
+    end
+end
+deactivate RPC
+
+Executor -> Executor: Giải phóng tài nguyên và khóa tuần tự
+deactivate Executor
+@enduml

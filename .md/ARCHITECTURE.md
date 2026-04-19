@@ -41,7 +41,7 @@ Hệ thống Liquidator là một ứng dụng Rust theo dõi và thanh lý các
                                │ alloy-rs / ethers-rs
                                ▼
 ┌───────────────────────────────────────────────────────────────────┐
-│                         PROVIDER LAYER                             │
+│                          RPC PROVIDER                              │
 │  ┌─────────────────────────────────────────────────────────────┐  │
 │  │                    AaveProvider                             │  │
 │  │  • RPC Connection                                           │  │

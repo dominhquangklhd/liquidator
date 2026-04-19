@@ -1,0 +1,56 @@
+@startuml erd_diagram
+hide circle
+skinparam linetype ortho
+skinparam backgroundColor #FFFFFF
+skinparam entity {
+    BackgroundColor #D6EAF8
+    BorderColor #2C3E50
+    ArrowColor #2C3E50
+    FontName Arial
+}
+
+entity "User" as user {
+    * user_address (PK)
+    --
+    health_factor
+    total_collateral_usd
+    total_debt_usd
+    ltv
+    liquidation_threshold
+    collateral_assets
+    debt_assets
+    estimated_profit
+    risk_score
+    last_updated
+}
+
+entity "Health Snapshot" as snapshot {
+    * id (PK)
+    --
+    user_address (FK)
+    timestamp
+    health_factor
+    total_collateral_usd
+    total_debt_usd
+}
+
+entity "Liquidation" as event {
+    * id (PK)
+    --
+    user_address (FK)
+    timestamp
+    collateral_asset
+    debt_asset
+    collateral_seized
+    debt_covered
+    liquidator
+    tx_hash
+    profit_usd
+    gas_cost_usd
+    status
+    error_message
+}
+
+user ||..o{ snapshot : "Lưu vết theo thời gian"
+user ||..o{ event : "Ghi nhận giao dịch thanh lý"
+@enduml

@@ -1,0 +1,96 @@
+@startuml system_class_diagram_correct
+skinparam classAttributeIconSize 0
+skinparam backgroundColor #FFFFFF
+skinparam class {
+    BackgroundColor #D6EAF8
+    BorderColor #2C3E50
+    ArrowColor #2C3E50
+    FontName Arial
+}
+
+' ===================== BOUNDARY =====================
+package "Boundary Layer" {
+    class AaveProvider <<boundary>> {
+        + get_block_number(): U64
+        + watch_blocks(tx: Sender): void
+        + watch_aave_events(pool_addr): void
+    }
+
+    class ChainlinkFeed <<boundary>> {
+        + latestRoundData(): PriceData
+        + description(): String
+        + decimals(): u8
+    }
+}
+
+' ===================== CONTROL =====================
+package "Control Layer" {
+    class RiskEngine <<control>> {
+        + calculate_health_factor(user: User): f64
+        + evaluate_risk_bucket(user: User): RiskLevel
+    }
+
+    class ProfitCalculator <<control>> {
+        + estimate_net_profit(user: User): ProfitEstimate
+        + calculate_gas_fee(tx): GasCostEstimate
+    }
+
+    class StrategyDecider <<control>> {
+        + build_optimal_route(target: LiquidationTarget): ExecutionPlan
+        + construct_payload(plan): Payload
+    }
+
+    class LiquidationExecutor <<control>> {
+        + sign_and_broadcast(payload): TxHash
+    }
+}
+
+' ===================== ENTITY =====================
+package "Entity Layer" {
+    class HybridStorage <<entity>> {
+        + insert(target: LiquidationTarget): void
+        + get(user_address): Option<LiquidationTarget>
+        + remove(user_address): Option<LiquidationTarget>
+        + get_top(n): Vec<LiquidationTarget>
+    }
+
+    class HotCache <<entity>> {
+        - cache: BTreeMap
+    }
+
+    class ColdStorage <<entity>> {
+        + query(sql): ResultSet
+    }
+
+    class OracleManager <<entity>> {
+        + get_asset_price(asset): Price
+        + update_price_feed(): void
+    }
+
+    class NonceManager <<entity>> {
+        + get_next_nonce(address): u64
+        + mark_confirmed(nonce): void
+    }
+}
+
+' ===================== RELATIONSHIPS =====================
+
+' --- Composition (Ownership) ---
+HybridStorage *-- HotCache
+HybridStorage *-- ColdStorage
+OracleManager *-- ChainlinkFeed : feeds: HashMap
+LiquidationExecutor *-- NonceManager
+
+' --- Dependency (Method calls via Reference) ---
+AaveProvider ..> HybridStorage : "Truyền event data"
+AaveProvider ..> ChainlinkFeed : "Poll price updates"
+
+RiskEngine ..> OracleManager : "gọi get_asset_price()"
+RiskEngine ..> HybridStorage : "gọi insert/remove()"
+
+RiskEngine ..> ProfitCalculator : "Chuyển targets rủi ro"
+ProfitCalculator ..> StrategyDecider : "Targets khả thi lợi nhuận"
+StrategyDecider ..> LiquidationExecutor : "Truyền ExecutionPlan"
+LiquidationExecutor ..> AaveProvider : "Gọi contract function"
+
+@enduml

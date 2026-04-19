@@ -1,0 +1,39 @@
+﻿@startuml e2e_system_usecase
+skinparam packageStyle rectangle
+skinparam backgroundColor #FFFFFF
+skinparam usecase {
+    BackgroundColor #E2EAF4
+    BorderColor #2C3E50
+    ArrowColor #2C3E50
+    FontName Arial
+}
+
+left to right direction
+
+actor "Liquidator Bot" as Bot
+actor "RPC Provider" as RPC
+actor "The Graph" as Graph
+
+rectangle "Hệ thống thanh lý thanh khoản" {
+    
+    usecase "UC01: Khởi động và đồng bộ dữ liệu" as UC1
+    usecase "UC02: Lắng nghe và xử lý sự kiện vị thế người dùng" as UC2
+    usecase "UC03: Lắng nghe và phản hồi cập nhật giá tài sản" as UC3
+    usecase "UC04: Thực thi chiến dịch thanh lý trọn gói" as UC4
+
+}
+
+Bot --> UC1 : "Kích hoạt khởi chạy"
+Graph --> UC1 : "Cung cấp danh sách ví đang vay nợ"
+RPC --> UC1 : "Cung cấp số dư thực tế"
+
+RPC --> UC2 : "Phát sự kiện từ mạng lưới"
+
+RPC --> UC3 : "Phát sự kiện cập nhật giá mới"
+
+UC2 ..> UC4 : <<include>>\nChuyển giao nếu hệ số sức khỏe < 1
+UC3 ..> UC4 : <<include>>\nChuyển giao nếu hệ số sức khỏe < 1
+
+UC4 --> RPC : "Gọi giao dịch thanh lý lên chuỗi"
+
+@enduml

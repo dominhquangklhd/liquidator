@@ -1,0 +1,36 @@
+﻿@startuml
+skinparam packageStyle rectangle
+skinparam backgroundColor #FFFFFF
+skinparam usecase {
+    BackgroundColor #E2EAF4
+    BorderColor #2C3E50
+    ArrowColor #2C3E50
+    FontName Arial
+}
+
+left to right direction
+
+actor "RPC Provider" as RPC
+
+rectangle "UC02: Phản hồi sự kiện mạng lưới" {
+
+    usecase "Xử lý sự kiện biến động liên quan vị thế" as UC02
+
+    usecase "Lắng nghe và giải mã dữ liệu hành vi" as Sub1
+    usecase "Cập nhật dữ liệu số lượng vào hệ thống" as Sub2
+    usecase "Đánh giá lại hệ số sức khỏe ví tương tác" as Sub3
+
+    usecase "Kích hoạt chuyển giao luồng thanh lý" as Sub4
+    usecase "Ghi nhận hoàn tất và kết thúc quy trình" as Ext1
+}
+
+RPC --> UC02 : "Phát tín hiệu lệnh xử lý từ giao thức"
+
+UC02 ..> Sub1 : <<include>>
+UC02 ..> Sub2 : <<include>>
+UC02 ..> Sub3 : <<include>>
+
+Sub3 ..> Sub4 : <<include>>\nThực thi nếu chỉ số thấp hơn ngưỡng
+Ext1 .up.> Sub3 : <<extend>>\nTiến hành khi đạt mức an toàn
+
+@enduml

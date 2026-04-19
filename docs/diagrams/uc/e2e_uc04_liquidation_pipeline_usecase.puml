@@ -1,0 +1,40 @@
+﻿@startuml
+skinparam packageStyle rectangle
+skinparam backgroundColor #FFFFFF
+skinparam usecase {
+    BackgroundColor #E2EAF4
+    BorderColor #2C3E50
+    ArrowColor #2C3E50
+    FontName Arial
+}
+
+left to right direction
+
+actor "Hệ thống tự động" as System
+actor "RPC Provider" as RPC
+
+rectangle "UC04: Thực thi thanh lý trọn gói quy trình" {
+
+    usecase "Thực thi toàn bộ lớp quy trình xử lý" as UC04
+
+    usecase "Khảo sát chiến lược dự toán lợi nhuận" as Sub1
+    usecase "Lập chiến dịch định tuyến thanh khoản mượn" as Sub2
+    usecase "Ký duyệt xác thực danh tính tuần tự" as Sub3
+    usecase "Gắn giao dịch lên khối và giám sát" as Sub4
+
+    usecase "Hủy bỏ luồng thao tác do thua lỗ ròng" as Ext1
+    usecase "Đẩy lệ phí cấp tốc nhồi chặn kẹt mạng" as Ext2
+}
+
+System --> UC04 : "Chỉ định mục tiêu cần xử lý khẩn cấp"
+UC04 --> RPC : "Tạo và thả gói xử lý hợp đồng lên mạng"
+
+UC04 ..> Sub1 : <<include>>
+UC04 ..> Sub2 : <<include>>
+UC04 ..> Sub3 : <<include>>
+UC04 ..> Sub4 : <<include>>
+
+Ext1 .up.> Sub1 : <<extend>>\nThực thi khi lợi nhuận trừ hao dưới số 0
+Ext2 .up.> Sub4 : <<extend>>\nCác lệnh đang chờ xử lý kéo dài
+
+@enduml
