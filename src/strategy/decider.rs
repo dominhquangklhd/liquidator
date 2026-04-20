@@ -623,7 +623,6 @@ mod tests {
             gross_profit_usd: profit + 30.0, // gross > net
             gas_cost_usd: 30.0,
             slippage_cost_usd: 0.0,
-            flash_loan_fee_usd: 0.0,
             net_profit_usd: profit,
             roi_pct: if profit > 0.0 { profit / 30.0 * 100.0 } else { 0.0 },
             is_profitable: profit > 0.0,

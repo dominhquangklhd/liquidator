@@ -8,8 +8,7 @@
 //   gross_profit = collateral_received - debt_to_cover = debt_to_cover × bonus%
 //   gas_cost = gas_price × gas_limit → USD
 //   slippage = collateral_received × (base_slippage% + size_impact%)
-//   flash_loan_fee = debt_to_cover × 0.05% (nếu dùng flash loan)
-//   net_profit = gross_profit - gas_cost - slippage - flash_loan_fee
+//   net_profit = gross_profit - gas_cost - slippage
 //
 // Chọn cặp collateral/debt tối ưu:
 //   Score = gross_profit × (1 - slippage%) - gas_cost
@@ -322,28 +321,21 @@ impl ProfitCalculator {
         let total_slippage_pct = base_slippage + size_impact;
         let slippage_usd = actual_collateral_received * total_slippage_pct / 100.0;
         
-        // ── 6. Flash loan fee (nếu có) ──
-        let flash_loan_fee = if self.config.include_flash_loan_fee {
-            actual_debt_to_cover * self.config.flash_loan_fee_pct / 100.0
-        } else {
-            0.0
-        };
-        
-        // ── 7. Net profit ──
-        let total_cost = gas_cost.cost_usd + slippage_usd + flash_loan_fee;
+        // ── 6. Net profit ──
+        let total_cost = gas_cost.cost_usd + slippage_usd;
         let net_profit = gross_profit - total_cost;
         
-        // ── 8. ROI ──
+        // ── 7. ROI ──
         let roi = if gas_cost.cost_usd > 0.0 {
             net_profit / gas_cost.cost_usd * 100.0
         } else {
             if net_profit > 0.0 { f64::INFINITY } else { 0.0 }
         };
         
-        // ── 9. Quyết định ──
+        // ── 8. Quyết định ──
         let (is_profitable, reject_reason) = self.check_profitability(net_profit, roi, &gas_cost);
         
-        // ── 10. Build breakdown ──
+        // ── 9. Build breakdown ──
         let breakdown = ProfitBreakdown {
             debt_covered_usd: actual_debt_to_cover,
             collateral_base_usd: actual_debt_to_cover, // phần = debt
@@ -352,7 +344,6 @@ impl ProfitCalculator {
             slippage_pct: base_slippage,
             slippage_usd,
             size_impact_pct: size_impact,
-            flash_loan_fee_usd: flash_loan_fee,
             total_cost_usd: total_cost,
             gross_profit_usd: gross_profit,
             net_profit_usd: net_profit,
@@ -366,7 +357,6 @@ impl ProfitCalculator {
             gross_profit_usd: gross_profit,
             gas_cost_usd: gas_cost.cost_usd,
             slippage_cost_usd: slippage_usd,
-            flash_loan_fee_usd: flash_loan_fee,
             net_profit_usd: net_profit,
             roi_pct: roi,
             is_profitable,

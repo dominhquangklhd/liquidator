@@ -39,7 +39,7 @@ HF = Σ(Collateral_i × LiquidationThreshold_i) / Σ(Debt_i)
 
 ### Module 3 — Profit (`src/profit/`)
 
-**Chức năng:** Tính toán lợi nhuận ước tính cho mỗi cơ hội thanh lý, bao gồm gross profit, gas cost, slippage và flash loan fee.
+**Chức năng:** Tính toán lợi nhuận ước tính cho mỗi cơ hội thanh lý, bao gồm gross profit, gas cost và slippage.
 
 | File | Loại diagram |
 |------|-------------|
@@ -51,14 +51,14 @@ HF = Σ(Collateral_i × LiquidationThreshold_i) / Σ(Debt_i)
 debt_to_cover        = total_debt × close_factor (50%)
 collateral_received  = debt_to_cover × (1 + bonus%)
 gross_profit         = debt_to_cover × bonus%
-net_profit           = gross_profit − gas_cost − slippage − flash_loan_fee
+net_profit           = gross_profit − gas_cost − slippage
 ```
 
 ---
 
 ### Module 4 — Strategy (`src/strategy/`)
 
-**Chức năng:** Quyết định chiến lược tối ưu (Direct vs Flash Loan), ưu tiên hóa danh sách targets theo multi-factor scoring, quản lý circuit breaker.
+**Chức năng:** Quyết định chiến lược tối ưu cho Direct execution, ưu tiên hóa danh sách targets theo multi-factor scoring, quản lý circuit breaker.
 
 | File | Loại diagram |
 |------|-------------|

@@ -95,7 +95,7 @@ Bot liquidation chuyên nghiệp cần **11 luồng (threads/tasks)** chính:
 - [x] **evaluate_batch()** - Đánh giá nhiều targets, sort by profit desc
 - [x] **find_profitable()** - Filter chỉ lấy profitable opportunities
 - [x] **find_liquidation_pairs()** - Tìm tất cả cặp collateral/debt khả thi
-- [x] **calculate_profit()** - Tính: debt_to_cover, bonus, gas, slippage, flash_loan_fee
+- [x] **calculate_profit()** - Tính: debt_to_cover, bonus, gas, slippage
 - [x] **check_profitability()** - Kiểm tra min_profit, min_roi thresholds
 - [x] **ProfitStats** - Thống kê: evaluations, profitable count, avg gas cost
 - [x] **23 unit tests** - config (7), types (5), gas (4), calculator (7) — all passed

@@ -4,7 +4,7 @@
 // - Đọc gas price hiện tại từ RPC (legacy hoặc EIP-1559)
 // - Tính gas cost bằng ETH
 // - Chuyển đổi gas cost sang USD (dùng ETH price từ Oracle)
-// - Hỗ trợ cả standard liquidation và flash loan liquidation
+// - Hỗ trợ nhiều mức gas limit cho các execution path
 
 use ethers::providers::{Provider, Http, Middleware};
 use anyhow::Result;
@@ -122,12 +122,12 @@ mod tests {
     }
     
     #[test]
-    fn test_gas_cost_flash_loan() {
-        // Flash loan uses more gas
+    fn test_gas_cost_higher_gas_limit() {
+        // Higher gas limit should increase cost
         let standard = GasCostEstimate::calculate(30.0, 500_000, 2000.0);
-        let flash = GasCostEstimate::calculate(30.0, 800_000, 2000.0);
+        let higher_limit = GasCostEstimate::calculate(30.0, 800_000, 2000.0);
         
-        assert!(flash.cost_usd > standard.cost_usd);
-        assert!((flash.cost_usd - 48.0).abs() < 0.01); // 30 * 800k / 1e9 * 2000 = $48
+        assert!(higher_limit.cost_usd > standard.cost_usd);
+        assert!((higher_limit.cost_usd - 48.0).abs() < 0.01); // 30 * 800k / 1e9 * 2000 = $48
     }
 }

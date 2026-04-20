@@ -154,8 +154,7 @@ async fn test_profit_calculator_on_scripted_scenario() {
     let price_cache = Arc::new(RwLock::new(price_map));
 
     // ProfitConfig.local_fork(): verbose=true, min_profit thấp để dễ quan sát.
-    let mut profit_cfg = ProfitConfig::local_fork();
-    profit_cfg.include_flash_loan_fee = false;
+    let profit_cfg = ProfitConfig::local_fork();
 
     let gas_est = GasEstimator::new(Arc::clone(&provider));
     let calc = ProfitCalculator::new(profit_cfg, gas_est, price_cache);

@@ -317,8 +317,6 @@ async fn main() {
             let mut profit_config = ProfitConfig::local_fork(); // Dùng local_fork() cho Anvil
             profit_config.min_profit_usd = env_f64("PROFIT_MIN_USD", profit_config.min_profit_usd);
             profit_config.min_roi_pct = env_f64("PROFIT_MIN_ROI_PCT", profit_config.min_roi_pct);
-            // Direct/Skip-only strategy: keep flash-loan fee disabled to avoid misleading estimates.
-            profit_config.include_flash_loan_fee = false;
             profit_config.fallback_gas_price_gwei = env_f64(
                 "PROFIT_FALLBACK_GAS_PRICE_GWEI",
                 profit_config.fallback_gas_price_gwei,

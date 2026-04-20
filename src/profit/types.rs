@@ -29,11 +29,8 @@ pub struct ProfitEstimate {
     
     /// Ước lượng slippage (USD) — mất khi swap collateral → stable
     pub slippage_cost_usd: f64,
-    
-    /// Flash loan fee (USD) — nếu dùng flash loan
-    pub flash_loan_fee_usd: f64,
-    
-    /// Net profit (USD) = gross - gas - slippage - flash_loan_fee
+
+    /// Net profit (USD) = gross - gas - slippage
     pub net_profit_usd: f64,
     
     /// ROI (%) = net_profit / gas_cost × 100
@@ -60,7 +57,6 @@ impl ProfitEstimate {
             gross_profit_usd: 0.0,
             gas_cost_usd: 0.0,
             slippage_cost_usd: 0.0,
-            flash_loan_fee_usd: 0.0,
             net_profit_usd: 0.0,
             roi_pct: 0.0,
             is_profitable: false,
@@ -217,10 +213,7 @@ pub struct ProfitBreakdown {
     
     /// Size impact (thêm slippage do position lớn)
     pub size_impact_pct: f64,
-    
-    /// Flash loan fee (USD)
-    pub flash_loan_fee_usd: f64,
-    
+
     // ── Summary ──
     /// Total cost (USD)
     pub total_cost_usd: f64,
@@ -245,7 +238,6 @@ impl ProfitBreakdown {
              │ ─────────────────────────────────────\n\
              │ Gas cost:         -${:.2} ({:.1} Gwei × {} gas)\n\
              │ Slippage:         -${:.2} ({:.2}% + {:.2}% size)\n\
-             │ Flash loan fee:   -${:.2}\n\
              │ ─────────────────────────────────────\n\
              │ Total cost:       -${:.2}\n\
              │ NET PROFIT:       ${:.2}\n\
@@ -257,7 +249,6 @@ impl ProfitBreakdown {
             self.gross_profit_usd,
             self.gas.cost_usd, self.gas.gas_price_gwei, self.gas.gas_limit,
             self.slippage_usd, self.slippage_pct, self.size_impact_pct,
-            self.flash_loan_fee_usd,
             self.total_cost_usd,
             self.net_profit_usd,
         )
@@ -329,7 +320,6 @@ mod tests {
             gross_profit_usd: 400.0,
             gas_cost_usd: 30.0,
             slippage_cost_usd: 40.0,
-            flash_loan_fee_usd: 0.0,
             net_profit_usd: 330.0,
             roi_pct: 1100.0,
             is_profitable: true,

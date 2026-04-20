@@ -15,6 +15,12 @@ use crate::risk::bucket::RiskBucket;
 use crate::risk::engine::{RiskEngine, RiskEngineConfig};
 use crate::storage::{HybridStorage, LiquidationTarget};
 
+// Bootstrap configuration constants
+const MAX_BOOTSTRAP_CANDIDATES: usize = 500;  // Final limit of candidates
+const MAX_SUBGRAPH_ACCOUNTS: usize = 500;     // Initial query limit from subgraph
+const MAX_PREFILTERED_ACCOUNTS: usize = 200;  // Prefiltering limit
+const MAX_POSITIONS_PER_ACCOUNT: usize = 50;  // Positions per account
+
 fn u256_to_f64(value: U256) -> f64 {
     value.to_string().parse::<f64>().unwrap_or(f64::INFINITY)
 }
@@ -246,13 +252,16 @@ pub async fn bootstrap_onchain_state(
             .unwrap_or(Ordering::Equal)
     });
 
-    if candidates.len() > 100 {
-        candidates.truncate(100);
+    if candidates.len() > MAX_BOOTSTRAP_CANDIDATES {
+        candidates.truncate(MAX_BOOTSTRAP_CANDIDATES);
     }
 
     let mut persisted_targets = Vec::with_capacity(candidates.len());
+    let candidates_count = candidates.len();
     let hot_cache_threshold = storage.hot_cache_threshold();
     let mut hot_cache_eligible = 0usize;
+    let mut hot_cache_updated = 0usize;
+    
     for (user_id, user, target) in candidates {
         if target.health_factor < hot_cache_threshold {
             hot_cache_eligible += 1;
@@ -273,22 +282,32 @@ pub async fn bootstrap_onchain_state(
                 .add_user_to_asset("USDC".to_string(), user_id.clone());
         }
 
-        engine.users.insert(user_id, user);
+        engine.users.insert(user_id.clone(), user);
 
         if let Err(e) = storage.update_user_hf(target.clone()).await {
-            tracing::warn!("Failed to update bootstrap target in hot cache: {:?}", e);
+            tracing::error!("Failed to update bootstrap target in hot cache for {}: {:?}", user_id, e);
+        } else {
+            hot_cache_updated += 1;
         }
         persisted_targets.push(target);
     }
 
-    if let Err(e) = storage.persist_targets_to_db(&persisted_targets).await {
-        tracing::warn!("Failed to persist bootstrap targets to SQLite: {:?}", e);
+    tracing::info!("Bootstrap persistence: updating DB with {} targets", persisted_targets.len());
+    match storage.persist_targets_to_db(&persisted_targets).await {
+        Ok(()) => {
+            tracing::info!("Successfully persisted {} targets to SQLite", persisted_targets.len());
+        }
+        Err(e) => {
+            tracing::error!("Failed to persist bootstrap targets to SQLite: {:?}", e);
+        }
     }
 
     tracing::info!(
-        "On-chain bootstrap complete: assets={} loaded_users={} hot_cache_eligible={} (threshold={:.2}, HF<=2 top100)",
+        "On-chain bootstrap complete: assets={} candidates={} persisted_to_db={} hot_cache_updated={} hot_cache_eligible={} (threshold={:.2})",
         assets_loaded,
+        candidates_count,
         persisted_targets.len(),
+        hot_cache_updated,
         hot_cache_eligible,
         hot_cache_threshold
     );
@@ -328,9 +347,11 @@ async fn fetch_top_users_from_subgraph() -> Result<Vec<Address>> {
     // First try rich account positions query and prefilter likely risky users (HF <= 2)
     // to reduce expensive on-chain calls during bootstrap.
     let rich_query = r#"query BootstrapUsersRich {
-        accounts(first: 1000) {
+        accounts(first: 500) {
             id
-            positions(first: 50) {
+            positions(first: 50, where: {
+                balance_not: "0"
+            }) {
                 balance
                 market {
                     liquidationThreshold
@@ -479,8 +500,8 @@ async fn fetch_top_users_from_subgraph() -> Result<Vec<Address>> {
         if !out.is_empty() {
             out.sort_unstable();
             out.dedup();
-            if out.len() > 100 {
-                out.truncate(100);
+            if out.len() > MAX_SUBGRAPH_ACCOUNTS {
+                out.truncate(MAX_SUBGRAPH_ACCOUNTS);
             }
             return Ok(out);
         }
@@ -578,7 +599,7 @@ fn parse_prefiltered_accounts_from_positions(value: &Value) -> Vec<Address> {
         if seen.insert(addr) {
             out.push(addr);
         }
-        if out.len() >= 200 {
+        if out.len() >= MAX_PREFILTERED_ACCOUNTS {
             break;
         }
     }

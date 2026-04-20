@@ -24,9 +24,6 @@ pub struct ProfitConfig {
     /// Gas limit cho liquidation transaction
     pub gas_limit: u64,
     
-    /// Gas limit cho liquidation + flash loan
-    pub flash_loan_gas_limit: u64,
-    
     /// Slippage tolerance mặc định (%)
     pub default_slippage_pct: f64,
     
@@ -43,12 +40,6 @@ pub struct ProfitConfig {
     /// Minimum ROI (%) — net profit / gas cost
     /// Ví dụ: 200.0 = profit phải >= 2x gas cost
     pub min_roi_pct: f64,
-    
-    /// Có tính flash loan fee không (Aave: 0.05%)
-    pub include_flash_loan_fee: bool,
-    
-    /// Flash loan fee (%)
-    pub flash_loan_fee_pct: f64,
     
     /// Danh sách stablecoins (để áp dụng slippage thấp hơn)
     pub stablecoins: Vec<String>,
@@ -83,14 +74,11 @@ impl Default for ProfitConfig {
             default_bonus_pct: 5.0,
             close_factor: 0.5,        // 50% max close
             gas_limit: 500_000,
-            flash_loan_gas_limit: 800_000,
             default_slippage_pct: 0.5,
             stablecoin_slippage_pct: 0.1,
             size_impact_pct_per_10k: 0.1,
             min_profit_usd: 10.0,
             min_roi_pct: 100.0,       // Profit >= 1x gas cost
-            include_flash_loan_fee: false,
-            flash_loan_fee_pct: 0.05,  // Aave V3: 0.05%
             stablecoins: vec![
                 "USDC".to_string(),
                 "USDT".to_string(),

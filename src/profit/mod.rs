@@ -22,8 +22,7 @@
 //   │     ├── gross_profit = debt_to_cover × bonus%
 //   │     ├── gas_cost = gas_price × gas_limit → USD
 //   │     ├── slippage = collateral × (base% + size_impact%)
-//   │     ├── flash_loan_fee = debt × 0.05%
-//   │     └── net_profit = gross - gas - slippage - flash_fee
+//   │     └── net_profit = gross - gas - slippage
 //   └── check_profitability()       → (is_profitable, reject_reason)
 // ```
 

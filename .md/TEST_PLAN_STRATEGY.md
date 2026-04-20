@@ -73,7 +73,7 @@ Luồng chính: **Targets → Profit Filter → Strategy Decision → Priority S
 | U10 | `test_plan_exposure_limit` | Dừng khi tổng exposure vượt limit | ✅ Đã có |
 | U11 | `test_circuit_breaker_trips` | N failures liên tiếp → tất cả Skip | ✅ Đã có |
 | U12 | `test_circuit_breaker_reset` | 1 success → reset failure count | ✅ Đã có |
-| U13 | `test_stats_tracking` | Đếm đúng direct/flash_loan/skip counts | ✅ Đã có |
+| U13 | `test_stats_tracking` | Đếm đúng direct/skip counts | ✅ Đã có |
 
 **Bổ sung cần thiết:**
 
