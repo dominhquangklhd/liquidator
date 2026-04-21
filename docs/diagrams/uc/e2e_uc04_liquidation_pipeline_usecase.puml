@@ -10,31 +10,34 @@ skinparam usecase {
 
 left to right direction
 
-actor "Hệ thống tự động" as System
 actor "RPC Provider" as RPC
 
-rectangle "UC04: Thực thi thanh lý trọn gói quy trình" {
+rectangle "UC04: Thực thi chiến dịch thanh lý trọn gói" {
 
-    usecase "Thực thi toàn bộ lớp quy trình xử lý" as UC04
+    usecase "Thực thi chiến dịch thanh lý trọn gói" as UC04
 
-    usecase "Khảo sát chiến lược dự toán lợi nhuận" as Sub1
-    usecase "Lập chiến dịch định tuyến thanh khoản mượn" as Sub2
-    usecase "Ký duyệt xác thực danh tính tuần tự" as Sub3
-    usecase "Gắn giao dịch lên khối và giám sát" as Sub4
+    usecase "Tính toán lợi nhuận thuần\nsau phí mạng và trượt giá" as Sub1
+    usecase "Tìm kiếm đường dẫn\nflash loan tối ưu" as Sub2
+    usecase "Mã hóa và ký duyệt\ngiao dịch thanh lý" as Sub3
+    usecase "Gửi giao dịch và\ntheo dõi trạng thái" as Sub4
+    usecase "Ghi nhận lịch sử\nvào cơ sở dữ liệu" as Sub5
 
-    usecase "Hủy bỏ luồng thao tác do thua lỗ ròng" as Ext1
-    usecase "Đẩy lệ phí cấp tốc nhồi chặn kẹt mạng" as Ext2
+    usecase "Hủy tiến trình do\nlợi nhuận không đảm bảo" as Ext1
+    usecase "Tăng phí mạng để\ngiải phóng giao dịch ách tắc" as Ext2
+    usecase "Ghi nhật ký khi\ngiao dịch bị từ chối" as Ext3
 }
 
-System --> UC04 : "Chỉ định mục tiêu cần xử lý khẩn cấp"
-UC04 --> RPC : "Tạo và thả gói xử lý hợp đồng lên mạng"
+RPC --> Sub4 : "Tiếp nhận giao dịch\nvào vùng chờ (Mempool)"
 
 UC04 ..> Sub1 : <<include>>
 UC04 ..> Sub2 : <<include>>
 UC04 ..> Sub3 : <<include>>
 UC04 ..> Sub4 : <<include>>
+UC04 ..> Sub5 : <<include>>
 
-Ext1 .up.> Sub1 : <<extend>>\nThực thi khi lợi nhuận trừ hao dưới số 0
-Ext2 .up.> Sub4 : <<extend>>\nCác lệnh đang chờ xử lý kéo dài
+Ext1 .up.> Sub1 : <<extend>>\nNếu lợi nhuận <= 0
+Sub2 .up.> Sub1 : <<include>>\nNếu lợi nhuận đạt ngưỡng
+Ext2 .up.> Sub4 : <<extend>>\nNếu giao dịch ách tắc\nquá lâu trong Mempool
+Ext3 .up.> Sub4 : <<extend>>\nNếu mạng lưới\ntừ chối giao dịch
 
 @enduml

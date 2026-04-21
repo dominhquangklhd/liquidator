@@ -1,34 +1,36 @@
 ﻿@startuml
-title UC01: Khởi động và đồng bộ dữ liệu hệ thống
+title UC01: Khởi động và đồng bộ dữ liệu hệ thống (Bootstrap)
 
-actor "Liquidator Bot" as Bot
-participant "Storage Layer" as Storage
+actor "Admin" as Admin
+participant "Hybrid Storage" as Storage
 actor "The Graph" as Graph
 actor "RPC Provider" as RPC
 participant "Risk Engine" as RE
 
-Bot -> Storage: Kích hoạt khởi chạy
+Admin -> Storage: Khởi động hệ thống hoặc\nyêu cầu tái đồng bộ
 activate Storage
 
-Storage -> Graph: Truy vấn toàn bộ vị thế nợ
+Storage -> Graph: Truy vấn danh sách ví\nđang có dư nợ (GraphQL)
 activate Graph
-Graph --> Storage: Trả về danh sách ví
+Graph --> Storage: Trả về danh sách địa chỉ ví có dư nợ
 deactivate Graph
 
-loop Xử lý từng ví
-    Storage -> RPC: Gọi hàm đối chiếu bộ đệm thực tế
+loop Xử lý từng ví trong danh sách
+    Storage -> RPC: Gọi getUserAccountData\nđể lấy số dư thực tế trên chuỗi
     activate RPC
-    RPC --> Storage: Trả về mức nợ và thế chấp thực tế
+    RPC --> Storage: Trả về khối lượng thế chấp\nvà dư nợ tại block mới nhất
     deactivate RPC
 end
 
-Storage -> Storage: Cập nhật và lưu vào cơ sở dữ liệu
-Storage -> RE: Nạp danh sách theo dõi ban đầu
+Storage -> Storage: Chuẩn hóa và lưu\nbản ghi trạng thái vị thế
+
+Storage -> RE: Nạp danh sách vị thế\nvào Risk Engine
 activate RE
-RE -> RE: Tính toán lại hệ số sức khỏe ban đầu
+RE -> RE: Tính toán Health Factor ban đầu
 RE --> Storage: Hoàn tất nạp bản đồ rủi ro nội bộ
 deactivate RE
 
-Storage --> Bot: Hệ thống sẵn sàng
+Storage --> Admin: Hệ thống chuyển sang\ntrạng thái "Sẵn sàng"
 deactivate Storage
+
 @enduml
