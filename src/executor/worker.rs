@@ -4,10 +4,23 @@
 // and executes them via the LiquidationExecutor
 
 use super::executor::{LiquidationExecutor, LiquidationResult};
-use crate::storage::{HybridStorage, LiquidationTarget, LiquidationEvent};
+use crate::storage::{
+    HybridStorage,
+    LiquidationTarget,
+    LiquidationEvent,
+    TransactionSnapshots,
+    ExecutorSnapshot,
+    EventsSnapshot,
+    OracleSnapshot,
+    ProfitSnapshot,
+    ProviderSnapshot,
+    RiskSnapshot,
+    StrategySnapshot,
+};
 use crate::profit::ProfitCalculator;
 use crate::strategy::{ExecutionMethod, StrategyDecider};
 use ethers::types::{Address, U256};
+use serde_json::json;
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -344,7 +357,7 @@ pub async fn executor_worker(
                 
                 match result {
                     Ok(res) => {
-                        handle_result(&storage, &planned.target, res, strategy_decider.as_ref()).await;
+                        handle_result(&executor, &storage, &planned, res, strategy_decider.as_ref()).await;
                     }
                     Err(e) => {
                         tracing::error!("Liquidation error for {}: {:?}", planned.target.user_address, e);
@@ -379,7 +392,7 @@ async fn execute_parallel(
                 
                 match result {
                     Ok(res) => {
-                        handle_result(&storage, &planned.target, res, strategy_decider.as_ref()).await;
+                        handle_result(&executor, &storage, &planned, res, strategy_decider.as_ref()).await;
                     }
                     Err(e) => {
                         tracing::error!("Liquidation error for {}: {:?}", planned.target.user_address, e);
@@ -427,11 +440,29 @@ fn should_drop_target_after_failure(error: &str) -> bool {
 
 /// Handle liquidation result
 async fn handle_result(
+    executor: &Arc<LiquidationExecutor>,
     storage: &Arc<HybridStorage>,
-    target: &LiquidationTarget,
+    planned: &PlannedExecution,
     result: LiquidationResult,
     strategy_decider: Option<&Arc<StrategyDecider>>,
 ) {
+    let target = &planned.target;
+    let gas_cost_usd = (result.gas_used * result.gas_price) as f64 / 1e18 * 2000.0;
+
+    let execution_method = planned
+        .method
+        .as_ref()
+        .map(|m| m.label().to_string())
+        .unwrap_or_else(|| "DIRECT".to_string());
+
+    let strategy_reasoning = match planned.method.as_ref() {
+        Some(ExecutionMethod::Skip { reason }) => reason.clone(),
+        Some(ExecutionMethod::Direct { gas_limit }) => {
+            format!("Strategy selected direct path (gas_limit={})", gas_limit)
+        }
+        None => "Default executor path (no strategy override)".to_string(),
+    };
+
     if result.success {
         if let Some(decider) = strategy_decider {
             decider.report_success().await;
@@ -449,15 +480,36 @@ async fn handle_result(
             debt_asset: target.debt.keys().next().cloned().unwrap_or_default(),
             collateral_seized: result.collateral_seized,
             debt_covered: result.debt_covered,
-            liquidator: "self".to_string(), // TODO: Get from executor
-            tx_hash: result.tx_hash.unwrap_or_default(),
+            liquidator: format!("{:?}", executor.wallet_address()),
+            tx_hash: result.tx_hash.clone().unwrap_or_default(),
             profit_usd: result.profit_usd,
-            gas_cost_usd: (result.gas_used * result.gas_price) as f64 / 1e18 * 2000.0, // Rough ETH price
+            gas_cost_usd,
             status: "success".to_string(),
             error_message: None,
         };
-        
-        if let Err(e) = storage.record_liquidation(event).await {
+
+        let liquidation_id = match storage.record_liquidation(event.clone()).await {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::error!("Failed to record liquidation: {:?}", e);
+                return;
+            }
+        };
+
+        let snapshots = build_transaction_snapshots(
+            executor,
+            planned,
+            &result,
+            &event,
+            &execution_method,
+            &strategy_reasoning,
+        )
+        .await;
+
+        if let Err(e) = storage
+            .record_transaction_snapshots(liquidation_id, snapshots)
+            .await
+        {
             tracing::error!("Failed to record liquidation: {:?}", e);
         }
         
@@ -468,7 +520,10 @@ async fn handle_result(
             result.gas_used
         );
     } else {
-        let error_msg = result.error.unwrap_or_else(|| "unknown error".to_string());
+        let error_msg = result
+            .error
+            .clone()
+            .unwrap_or_else(|| "unknown error".to_string());
 
         // Persist failed liquidation attempt for troubleshooting/analytics.
         let synthetic_tx_hash = match &result.tx_hash {
@@ -490,15 +545,36 @@ async fn handle_result(
             debt_asset: target.debt.keys().next().cloned().unwrap_or_default(),
             collateral_seized: result.collateral_seized,
             debt_covered: result.debt_covered,
-            liquidator: "self".to_string(),
+            liquidator: format!("{:?}", executor.wallet_address()),
             tx_hash: synthetic_tx_hash,
             profit_usd: result.profit_usd,
-            gas_cost_usd: (result.gas_used * result.gas_price) as f64 / 1e18 * 2000.0,
+            gas_cost_usd,
             status: "failed".to_string(),
             error_message: Some(error_msg.clone()),
         };
 
-        if let Err(e) = storage.record_liquidation(failed_event).await {
+        let liquidation_id = match storage.record_liquidation(failed_event.clone()).await {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::error!("Failed to record failed liquidation attempt: {:?}", e);
+                return;
+            }
+        };
+
+        let snapshots = build_transaction_snapshots(
+            executor,
+            planned,
+            &result,
+            &failed_event,
+            &execution_method,
+            &strategy_reasoning,
+        )
+        .await;
+
+        if let Err(e) = storage
+            .record_transaction_snapshots(liquidation_id, snapshots)
+            .await
+        {
             tracing::error!("Failed to record failed liquidation attempt: {:?}", e);
         }
 
@@ -525,6 +601,109 @@ async fn handle_result(
             target.user_address,
             error_msg
         );
+    }
+}
+
+async fn build_transaction_snapshots(
+    executor: &Arc<LiquidationExecutor>,
+    planned: &PlannedExecution,
+    result: &LiquidationResult,
+    liquidation_event: &LiquidationEvent,
+    execution_method: &str,
+    strategy_reasoning: &str,
+) -> TransactionSnapshots {
+    let target = &planned.target;
+    let chain_id = executor.chain_id().await.unwrap_or(0) as i64;
+    let pending_count = executor.pending_count().await as i64;
+    let wallet_balance = executor.wallet_balance().await.unwrap_or_else(|_| U256::zero());
+    let wallet_balance_wei = wallet_balance.to_string();
+    let wallet_balance_eth = u256_to_f64(wallet_balance) / 1e18;
+
+    let observed_assets = json!({
+        "collateral_assets": target.collateral.keys().collect::<Vec<_>>(),
+        "debt_assets": target.debt.keys().collect::<Vec<_>>(),
+    })
+    .to_string();
+
+    let event_payload = json!({
+        "user_address": target.user_address,
+        "collateral_asset": liquidation_event.collateral_asset,
+        "debt_asset": liquidation_event.debt_asset,
+        "tx_hash": liquidation_event.tx_hash,
+        "status": liquidation_event.status,
+        "error": liquidation_event.error_message,
+    })
+    .to_string();
+
+    let plan_context_json = json!({
+        "strategy_enabled": planned.method.is_some(),
+        "target_estimated_profit_usd": target.estimated_profit,
+        "risk_score": target.risk_score,
+        "result_success": result.success,
+    })
+    .to_string();
+
+    TransactionSnapshots {
+        executor: ExecutorSnapshot {
+            timestamp: liquidation_event.timestamp,
+            status: liquidation_event.status.clone(),
+            execution_method: execution_method.to_string(),
+            tx_hash: Some(liquidation_event.tx_hash.clone()),
+            gas_used: result.gas_used,
+            gas_price: result.gas_price,
+            error_message: liquidation_event.error_message.clone(),
+        },
+        events: EventsSnapshot {
+            timestamp: liquidation_event.timestamp,
+            event_name: if liquidation_event.status == "success" {
+                "LIQUIDATION_SUCCESS".to_string()
+            } else {
+                "LIQUIDATION_FAILED".to_string()
+            },
+            block_number: None,
+            payload_json: event_payload,
+        },
+        oracle: OracleSnapshot {
+            timestamp: liquidation_event.timestamp,
+            primary_source: "chainlink".to_string(),
+            observed_assets_json: observed_assets,
+            note: Some("Snapshot captured at execution stage".to_string()),
+        },
+        profit: ProfitSnapshot {
+            timestamp: liquidation_event.timestamp,
+            estimated_profit_usd: target.estimated_profit,
+            realized_profit_usd: liquidation_event.profit_usd,
+            gas_cost_usd: liquidation_event.gas_cost_usd,
+            net_profit_usd: liquidation_event.profit_usd - liquidation_event.gas_cost_usd,
+        },
+        provider: ProviderSnapshot {
+            timestamp: liquidation_event.timestamp,
+            chain_id,
+            wallet_address: format!("{:?}", executor.wallet_address()),
+            wallet_balance_wei,
+            wallet_balance_eth,
+            pending_tx_count: pending_count,
+            rpc_latency_ms: None,
+        },
+        risk: RiskSnapshot {
+            timestamp: liquidation_event.timestamp,
+            health_factor: target.health_factor,
+            total_collateral_usd: target.total_collateral_usd,
+            total_debt_usd: target.total_debt_usd,
+            ltv: target.ltv,
+            liquidation_threshold: target.liquidation_threshold,
+            risk_score: target.risk_score,
+            collateral: target.collateral.clone(),
+            debt: target.debt.clone(),
+        },
+        strategy: StrategySnapshot {
+            timestamp: liquidation_event.timestamp,
+            execution_method: execution_method.to_string(),
+            reasoning: strategy_reasoning.to_string(),
+            adjusted_profit_usd: target.estimated_profit,
+            is_executable: !matches!(planned.method, Some(ExecutionMethod::Skip { .. })),
+            plan_context_json,
+        },
     }
 }
 

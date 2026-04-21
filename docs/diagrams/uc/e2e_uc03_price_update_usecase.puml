@@ -12,25 +12,25 @@ left to right direction
 
 actor "RPC Provider" as RPC
 
-rectangle "UC03: Phản hồi biên độ định giá tài sản" {
+rectangle "UC03: Phản hồi sự kiện cập nhật biến động giá" {
 
-    usecase "Xử lý biến động giá toàn cục" as UC03
+    usecase "Phản hồi sự kiện cập nhật biến động giá" as UC03
 
-    usecase "Tiếp nhận giá và cập nhật cơ sở dữ liệu" as Sub1
-    usecase "Truy xuất các ví kết nối với tài sản" as Sub2
-    usecase "Cập nhật đồng loạt hệ số sức khỏe" as Sub3
+    usecase "Tiếp nhận và lưu mức giá mới\nvào kho lưu trữ lai" as Sub1
+    usecase "Truy xuất danh sách ví\nbị ảnh hưởng bởi tài sản" as Sub2
+    usecase "Tính toán lại hệ số sức khỏe\nđồng loạt cho danh sách ví" as Sub3
 
-    usecase "Kích hoạt luồng quy trình thanh lý" as Sub4
-    usecase "Bỏ qua và theo dõi mức độ an toàn" as Ext1
+    usecase "Kích hoạt luồng\nthực thi thanh lý (UC04)" as Sub4
+    usecase "Bỏ qua sự kiện do\nbiên độ thay đổi quá nhỏ" as Ext1
 }
 
-RPC --> UC03 : "Phát sự kiện cập nhật giá thị trường"
+RPC --> Sub1 : "Phát sự kiện\ncập nhật giá tài sản"
 
 UC03 ..> Sub1 : <<include>>
 UC03 ..> Sub2 : <<include>>
 UC03 ..> Sub3 : <<include>>
 
-Sub3 ..> Sub4 : <<include>>\nCô lập với các ví chạm mức báo động
-Ext1 .up.> Sub3 : <<extend>>\nTiến hành dọn dẹp các ví an toàn
+Sub3 ..> Sub4 : <<extend>>\nNếu hệ số sức khỏe < 1
+Ext1 .up.> UC03 : <<extend>>\nNếu biên độ giá < ngưỡng\nkích hoạt tối thiểu
 
 @enduml

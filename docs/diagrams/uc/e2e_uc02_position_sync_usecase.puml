@@ -12,25 +12,28 @@ left to right direction
 
 actor "RPC Provider" as RPC
 
-rectangle "UC02: Phản hồi sự kiện mạng lưới" {
+rectangle "UC02: Phản hồi sự kiện biến động vị thế người dùng" {
 
-    usecase "Xử lý sự kiện biến động liên quan vị thế" as UC02
+    usecase "Phản hồi sự kiện biến động vị thế người dùng" as UC02
 
-    usecase "Lắng nghe và giải mã dữ liệu hành vi" as Sub1
-    usecase "Cập nhật dữ liệu số lượng vào hệ thống" as Sub2
-    usecase "Đánh giá lại hệ số sức khỏe ví tương tác" as Sub3
+    usecase "Tiếp nhận và giải mã sự kiện\ntừ hợp đồng thông minh" as Sub1
+    usecase "Cập nhật số dư ví\nvào lớp lưu trữ" as Sub2
+    usecase "Tính toán lại hệ số sức khỏe\ncủa ví bị ảnh hưởng" as Sub3
 
-    usecase "Kích hoạt chuyển giao luồng thanh lý" as Sub4
-    usecase "Ghi nhận hoàn tất và kết thúc quy trình" as Ext1
+    usecase "Kích hoạt luồng\nthực thi thanh lý (UC04)" as Sub4
+    usecase "Ghi nhận trạng thái\nan toàn vào cơ sở dữ liệu" as Ext1
+
+    usecase "Bỏ qua sự kiện\nkhông hợp lệ hoặc lỗi thời" as Ext2
 }
 
-RPC --> UC02 : "Phát tín hiệu lệnh xử lý từ giao thức"
+RPC --> Sub1 : "Phát sự kiện\nbiến động vị thế"
 
 UC02 ..> Sub1 : <<include>>
 UC02 ..> Sub2 : <<include>>
 UC02 ..> Sub3 : <<include>>
 
-Sub3 ..> Sub4 : <<include>>\nThực thi nếu chỉ số thấp hơn ngưỡng
-Ext1 .up.> Sub3 : <<extend>>\nTiến hành khi đạt mức an toàn
+Sub3 ..> Sub4 : <<extend>>\nNếu hệ số sức khỏe < 1
+Ext1 .up.> Sub3 : <<extend>>\nNếu hệ số sức khỏe >= 1
+Ext2 .up.> Sub1 : <<extend>>\nNếu sự kiện không hợp lệ\nhoặc khối quá cũ
 
 @enduml

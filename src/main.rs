@@ -12,6 +12,8 @@ mod bootstrap;
 use tokio::sync::mpsc;
 use std::sync::Arc;
 use std::path::Path;
+use ethers::providers::Middleware;
+use ethers::types::U256;
 use crate::risk::engine::{RiskEngine, RiskEngineConfig};
 use crate::events::event::Event;
 use crate::provider::AaveProvider;
@@ -367,6 +369,39 @@ async fn main() {
                 Ok(executor) => {
                     let executor = Arc::new(executor);
 
+                    // Track only the executor wallet derived from PRIVATE_KEY.
+                    let executor_wallet = executor.wallet_address();
+                    let tracked_wallet_strings = vec![format!("{:?}", executor_wallet)];
+
+                    if let Err(e) = storage.sync_wallet_registry(&tracked_wallet_strings).await {
+                        tracing::error!("Failed to sync wallet registry: {:?}", e);
+                    }
+
+                    let snapshot_timestamp = chrono::Utc::now().timestamp();
+                    let chain_id = provider.chain_id() as i64;
+                    let rpc = provider.provider();
+                    let balance = rpc
+                        .get_balance(executor_wallet, None)
+                        .await
+                        .unwrap_or_else(|_| U256::zero());
+
+                    let wallet_snapshots = vec![crate::storage::WalletBalanceSnapshot {
+                        timestamp: snapshot_timestamp,
+                        chain_id,
+                        wallet_address: format!("{:?}", executor_wallet),
+                        balance_wei: balance.to_string(),
+                        balance_eth: u256_to_f64(balance) / 1e18,
+                    }];
+
+                    if let Err(e) = storage.record_wallet_balances(&wallet_snapshots).await {
+                        tracing::error!("Failed to record bootstrap wallet balances: {:?}", e);
+                    } else {
+                        tracing::info!(
+                            "✓ Recorded bootstrap wallet balances for {} tracked wallets",
+                            wallet_snapshots.len()
+                        );
+                    }
+
                     // Main liquidation loop: polls hot cache every 500ms by default
                     let executor_for_worker = Arc::clone(&executor);
                     let storage_for_worker = Arc::clone(&storage);
@@ -466,6 +501,10 @@ fn env_bool(key: &str, default: bool) -> bool {
         },
         Err(_) => default,
     }
+}
+
+fn u256_to_f64(value: U256) -> f64 {
+    value.to_string().parse::<f64>().unwrap_or(f64::INFINITY)
 }
 
 /// Worker mô phỏng sự kiện giá giảm (chỉ dùng để test)

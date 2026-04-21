@@ -12,7 +12,20 @@ pub mod sync;
 
 pub use cache::HotCache;
 pub use database::ColdStorage;
-pub use models::{LiquidationTarget, HistoricalSnapshot, LiquidationEvent};
+pub use models::{
+    LiquidationTarget,
+    HistoricalSnapshot,
+    LiquidationEvent,
+    ExecutorSnapshot,
+    EventsSnapshot,
+    OracleSnapshot,
+    ProfitSnapshot,
+    ProviderSnapshot,
+    WalletBalanceSnapshot,
+    RiskSnapshot,
+    StrategySnapshot,
+    TransactionSnapshots,
+};
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -180,8 +193,19 @@ impl HybridStorage {
     // ============================================================================
     
     /// Record liquidation event (persist to DB)
-    pub async fn record_liquidation(&self, event: LiquidationEvent) -> Result<()> {
+    pub async fn record_liquidation(&self, event: LiquidationEvent) -> Result<i64> {
         self.cold_storage.insert_liquidation(&event).await
+    }
+
+    /// Record module snapshots linked to one liquidation row.
+    pub async fn record_transaction_snapshots(
+        &self,
+        liquidation_id: i64,
+        snapshots: TransactionSnapshots,
+    ) -> Result<()> {
+        self.cold_storage
+            .insert_transaction_snapshots(liquidation_id, &snapshots)
+            .await
     }
     
     /// Get user's health factor history
@@ -212,6 +236,19 @@ impl HybridStorage {
     /// Load all user addresses from database (for bootstrap)
     pub async fn load_all_user_addresses(&self) -> Result<Vec<ethers::types::Address>> {
         self.cold_storage.load_all_user_addresses().await
+    }
+
+    /// Sync admin-managed liquidator wallet list.
+    ///
+    /// Wallets present in the input are marked active.
+    /// Wallets missing from the input are marked inactive.
+    pub async fn sync_wallet_registry(&self, wallet_addresses: &[String]) -> Result<()> {
+        self.cold_storage.sync_wallet_registry(wallet_addresses).await
+    }
+
+    /// Record a batch of wallet balance snapshots.
+    pub async fn record_wallet_balances(&self, snapshots: &[WalletBalanceSnapshot]) -> Result<()> {
+        self.cold_storage.insert_wallet_balance_snapshots(snapshots).await
     }
     
     // ============================================================================

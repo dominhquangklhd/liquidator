@@ -10,31 +10,33 @@ skinparam usecase {
 
 left to right direction
 
-actor "Liquidator Bot" as Bot
+actor "Quản trị viên" as Admin
 actor "The Graph" as Graph
 actor "RPC Provider" as RPC
 
-rectangle "UC01: Khởi tạo và đồng bộ dữ liệu" {
+rectangle "UC01: Khởi động và đồng bộ dữ liệu hệ thống (Bootstrap)" {
 
-    usecase "Khởi động và đồng bộ nền tảng hệ thống" as UC01
+    usecase "Khởi động và đồng bộ dữ liệu hệ thống" as UC01
 
-    usecase "Truy vấn danh sách vị thế nợ" as Sub1
-    usecase "Đối chiếu trạng thái thực tế ngay trên chuỗi" as Sub2
-    usecase "Cập nhật nội dung vào cơ sở dữ liệu" as Sub3
-    usecase "Tính toán hệ số rủi ro ban đầu" as Sub4
+    usecase "Truy vấn danh sách ví đang có dư nợ" as Sub1
+    usecase "Đối chiếu số dư thực tế trên chuỗi" as Sub2
+    usecase "Chuẩn hóa và lưu vào kho lưu trữ lai" as Sub3
+    usecase "Tính toán hệ số sức khỏe ban đầu" as Sub4
 
-    usecase "Sử dụng dữ liệu lưu trữ dự phòng cũ" as Ext1
+    usecase "Sử dụng danh sách ví\ndự phòng từ cơ sở dữ liệu nội bộ" as Ext1
+    usecase "Bỏ qua ví lỗi,\ntiếp tục với tài khoản khác" as Ext2
 }
 
-Bot --> UC01 : "Kích hoạt hệ thống"
-Graph --> UC01 : "Kết nối lấy ví đang vay"
-RPC --> UC01 : "Truy vết số dư thực tế"
+Admin --> UC01 : "Khởi động hoặc\nyêu cầu tái đồng bộ"
+Graph --> Sub1 : "Cung cấp dữ liệu\nđã lập chỉ mục"
+RPC --> Sub2 : "Cung cấp dữ liệu\ntrên chuỗi"
 
 UC01 ..> Sub1 : <<include>>
 UC01 ..> Sub2 : <<include>>
 UC01 ..> Sub3 : <<include>>
 UC01 ..> Sub4 : <<include>>
 
-Ext1 .up.> UC01 : <<extend>>\nTiến hành khi mạng lưới mất kết nối
+Ext1 .up.> UC01 : <<extend>>\nKhi The Graph mất kết nối\nhoặc trả về dữ liệu rỗng
+Ext2 .up.> Sub2 : <<extend>>\nKhi RPC Provider lỗi\nở một địa chỉ ví cụ thể
 
 @enduml

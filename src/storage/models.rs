@@ -176,3 +176,102 @@ impl LiquidationEvent {
         self.profit_usd - self.gas_cost_usd
     }
 }
+
+/// Executor module snapshot captured per liquidation attempt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutorSnapshot {
+    pub timestamp: i64,
+    pub status: String,
+    pub execution_method: String,
+    pub tx_hash: Option<String>,
+    pub gas_used: u64,
+    pub gas_price: u64,
+    pub error_message: Option<String>,
+}
+
+/// Events module snapshot captured per liquidation attempt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventsSnapshot {
+    pub timestamp: i64,
+    pub event_name: String,
+    pub block_number: Option<i64>,
+    pub payload_json: String,
+}
+
+/// Oracle module snapshot captured per liquidation attempt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OracleSnapshot {
+    pub timestamp: i64,
+    pub primary_source: String,
+    pub observed_assets_json: String,
+    pub note: Option<String>,
+}
+
+/// Profit module snapshot captured per liquidation attempt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProfitSnapshot {
+    pub timestamp: i64,
+    pub estimated_profit_usd: f64,
+    pub realized_profit_usd: f64,
+    pub gas_cost_usd: f64,
+    pub net_profit_usd: f64,
+}
+
+/// Provider module snapshot captured per liquidation attempt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderSnapshot {
+    pub timestamp: i64,
+    pub chain_id: i64,
+    pub wallet_address: String,
+    pub wallet_balance_wei: String,
+    pub wallet_balance_eth: f64,
+    pub pending_tx_count: i64,
+    pub rpc_latency_ms: Option<i64>,
+}
+
+/// Wallet balance snapshot recorded independently from liquidation attempts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletBalanceSnapshot {
+    pub timestamp: i64,
+    pub chain_id: i64,
+    pub wallet_address: String,
+    pub balance_wei: String,
+    pub balance_eth: f64,
+}
+
+/// Risk module snapshot captured per liquidation attempt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RiskSnapshot {
+    pub timestamp: i64,
+    pub health_factor: f64,
+    pub total_collateral_usd: f64,
+    pub total_debt_usd: f64,
+    pub ltv: f64,
+    pub liquidation_threshold: f64,
+    pub risk_score: u8,
+    pub collateral: HashMap<String, f64>,
+    pub debt: HashMap<String, f64>,
+}
+
+/// Strategy module snapshot captured per liquidation attempt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StrategySnapshot {
+    pub timestamp: i64,
+    pub execution_method: String,
+    pub reasoning: String,
+    pub adjusted_profit_usd: f64,
+    pub is_executable: bool,
+    pub plan_context_json: String,
+}
+
+/// Full cross-module transaction snapshot linked to one liquidation row.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransactionSnapshots {
+    pub executor: ExecutorSnapshot,
+    pub events: EventsSnapshot,
+    pub oracle: OracleSnapshot,
+    pub profit: ProfitSnapshot,
+    pub provider: ProviderSnapshot,
+    pub risk: RiskSnapshot,
+    pub strategy: StrategySnapshot,
+}
