@@ -3,54 +3,169 @@ hide circle
 skinparam linetype ortho
 skinparam backgroundColor #FFFFFF
 skinparam entity {
-    BackgroundColor #D6EAF8
+    BackgroundColor #E8F8F5
     BorderColor #2C3E50
     ArrowColor #2C3E50
     FontName Arial
 }
 
-entity "User" as user {
-    * user_address (PK)
-    --
-    health_factor
-    total_collateral_usd
-    total_debt_usd
-    ltv
-    liquidation_threshold
-    collateral_assets
-    debt_assets
-    estimated_profit
-    risk_score
-    last_updated
+package "Core Entities" {
+    entity "User" as user {
+        * user_address (PK)
+        --
+        health_factor
+        total_collateral_usd
+        total_debt_usd
+        ltv
+        liquidation_threshold
+        collateral_json
+        debt_json
+        estimated_profit
+        risk_score
+        last_updated
+        in_hot_cache
+    }
+
+    entity "Health Snapshot (hf_history)" as snapshot {
+        * id (PK)
+        --
+        user_address (FK)
+        timestamp
+        health_factor
+        total_collateral_usd
+        total_debt_usd
+    }
+
+    entity "Liquidation" as liquidation {
+        * id (PK)
+        --
+        user_address (FK)
+        timestamp
+        collateral_asset
+        debt_asset
+        collateral_seized
+        debt_covered
+        liquidator
+        tx_hash
+        profit_usd
+        gas_cost_usd
+        status
+        error_message
+    }
 }
 
-entity "Health Snapshot" as snapshot {
-    * id (PK)
-    --
-    user_address (FK)
-    timestamp
-    health_factor
-    total_collateral_usd
-    total_debt_usd
+package "Module Snapshots (1-1 with Liquidation)" {
+    entity "Executor Snapshot" as exec_snap {
+        * liquidation_id (FK, UNIQUE)
+        --
+        timestamp
+        status
+        execution_method
+        tx_hash
+        gas_used
+        gas_price
+        error_message
+    }
+
+    entity "Event Snapshot" as event_snap {
+        * liquidation_id (FK, UNIQUE)
+        --
+        timestamp
+        event_name
+        block_number
+        payload_json
+    }
+
+    entity "Oracle Snapshot" as oracle_snap {
+        * liquidation_id (FK, UNIQUE)
+        --
+        timestamp
+        primary_source
+        observed_assets_json
+        note
+    }
+
+    entity "Profit Snapshot" as profit_snap {
+        * liquidation_id (FK, UNIQUE)
+        --
+        timestamp
+        estimated_profit_usd
+        realized_profit_usd
+        gas_cost_usd
+        net_profit_usd
+    }
+
+    entity "Provider Snapshot" as provider_snap {
+        * liquidation_id (FK, UNIQUE)
+        --
+        timestamp
+        chain_id
+        wallet_address
+        wallet_balance_wei
+        wallet_balance_eth
+        pending_tx_count
+        rpc_latency_ms
+    }
+
+    entity "Risk Snapshot" as risk_snap {
+        * liquidation_id (FK, UNIQUE)
+        --
+        timestamp
+        health_factor
+        total_collateral_usd
+        total_debt_usd
+        ltv
+        liquidation_threshold
+        risk_score
+        collateral_json
+        debt_json
+    }
+
+    entity "Strategy Snapshot" as strat_snap {
+        * liquidation_id (FK, UNIQUE)
+        --
+        timestamp
+        execution_method
+        reasoning
+        adjusted_profit_usd
+        is_executable
+        plan_context_json
+    }
 }
 
-entity "Liquidation" as event {
-    * id (PK)
-    --
-    user_address (FK)
-    timestamp
-    collateral_asset
-    debt_asset
-    collateral_seized
-    debt_covered
-    liquidator
-    tx_hash
-    profit_usd
-    gas_cost_usd
-    status
-    error_message
+package "Wallet Management" {
+    entity "Wallet Registry" as wallet_registry {
+        * wallet_address (PK)
+        --
+        is_active
+        created_at
+        last_updated
+    }
+
+    entity "Wallet Balance Snapshot (wallets)" as wallet_snapshot {
+        * id (PK)
+        --
+        timestamp
+        chain_id
+        wallet_address (FK)
+        balance_wei
+        balance_eth
+    }
 }
 
-user ||..o{ snapshot : "Lưu vết theo thời gian"
-user ||..o{ event : "Ghi nhận giao dịch thanh lý"
+' Core relationships
+user ||..o{ snapshot : "Lưu vết 1-N"
+user ||..o{ liquidation : "Ghi nhận 1-N"
+
+' Snapshot relationships (1-1 with cascade config)
+liquidation ||--|| exec_snap : "1-1"
+liquidation ||--|| event_snap : "1-1"
+liquidation ||--|| oracle_snap : "1-1"
+liquidation ||--|| profit_snap : "1-1"
+liquidation ||--|| provider_snap : "1-1"
+liquidation ||--|| risk_snap : "1-1"
+liquidation ||--|| strat_snap : "1-1"
+
+' Wallet relationships
+wallet_registry ||..o{ wallet_snapshot : "Lịch sử ví 1-N"
 @enduml
