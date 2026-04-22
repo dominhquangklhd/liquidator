@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Liquidation Analytics Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/sql.js@1.12.0/dist/sql-wasm.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <div class="bg-grid"></div>
+  <main class="container">
+    <header class="header card">
+      <div>
+        <p class="eyebrow">Read-only analytics</p>
+        <h1>Liquidation Performance</h1>
+      </div>
+      <div class="controls">
+        <label for="dbFile">SQLite file</label>
+        <input id="dbFile" type="file" accept=".db,.sqlite,.sqlite3,application/x-sqlite3" />
+        <label for="hours">Time window</label>
+        <select id="hours">
+          <option value="6">6h</option>
+          <option value="24" selected>24h</option>
+          <option value="72">72h</option>
+          <option value="168">7d</option>
+        </select>
+        <button id="refreshBtn">Refresh</button>
+      </div>
+    </header>
+
+    <section class="card info-strip">
+      <p id="dbMeta">Chua nap file DB. Hay chon file SQLite de bat dau.</p>
+    </section>
+
+    <section class="kpi-grid">
+      <article class="card kpi">
+        <p>Total Attempts</p>
+        <h2 id="kpiAttempts">-</h2>
+      </article>
+      <article class="card kpi">
+        <p>Success Rate</p>
+        <h2 id="kpiSuccessRate">-</h2>
+      </article>
+      <article class="card kpi">
+        <p>Net Profit</p>
+        <h2 id="kpiNetProfit">-</h2>
+      </article>
+      <article class="card kpi">
+        <p>Total Gas Cost</p>
+        <h2 id="kpiGasCost">-</h2>
+      </article>
+    </section>
+
+    <section class="charts-grid">
+      <article class="card chart-card">
+        <div class="card-title">Profit vs Gas Over Time</div>
+        <canvas id="profitChart"></canvas>
+      </article>
+      <article class="card chart-card">
+        <div class="card-title">Execution Status</div>
+        <canvas id="statusChart"></canvas>
+      </article>
+    </section>
+
+    <section class="card table-card">
+      <div class="card-title">Recent Liquidations</div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>User</th>
+              <th>Pair</th>
+              <th>Profit</th>
+              <th>Gas</th>
+              <th>Net</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="recentTableBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
