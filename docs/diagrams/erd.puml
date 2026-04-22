@@ -46,7 +46,7 @@ package "Core Entities" {
         collateral_seized
         debt_covered
         liquidator
-        tx_hash
+        tx_hash (UNIQUE)
         profit_usd
         gas_cost_usd
         status
@@ -56,6 +56,7 @@ package "Core Entities" {
 
 package "Module Snapshots (1-1 with Liquidation)" {
     entity "Executor Snapshot" as exec_snap {
+        * id (PK)
         * liquidation_id (FK, UNIQUE)
         --
         timestamp
@@ -68,6 +69,7 @@ package "Module Snapshots (1-1 with Liquidation)" {
     }
 
     entity "Event Snapshot" as event_snap {
+        * id (PK)
         * liquidation_id (FK, UNIQUE)
         --
         timestamp
@@ -77,6 +79,7 @@ package "Module Snapshots (1-1 with Liquidation)" {
     }
 
     entity "Oracle Snapshot" as oracle_snap {
+        * id (PK)
         * liquidation_id (FK, UNIQUE)
         --
         timestamp
@@ -86,6 +89,7 @@ package "Module Snapshots (1-1 with Liquidation)" {
     }
 
     entity "Profit Snapshot" as profit_snap {
+        * id (PK)
         * liquidation_id (FK, UNIQUE)
         --
         timestamp
@@ -96,18 +100,20 @@ package "Module Snapshots (1-1 with Liquidation)" {
     }
 
     entity "Provider Snapshot" as provider_snap {
+        * id (PK)
         * liquidation_id (FK, UNIQUE)
         --
         timestamp
         chain_id
         wallet_address
-        wallet_balance_wei
+        wallet_balance_wei (TEXT)
         wallet_balance_eth
         pending_tx_count
         rpc_latency_ms
     }
 
     entity "Risk Snapshot" as risk_snap {
+        * id (PK)
         * liquidation_id (FK, UNIQUE)
         --
         timestamp
@@ -122,6 +128,7 @@ package "Module Snapshots (1-1 with Liquidation)" {
     }
 
     entity "Strategy Snapshot" as strat_snap {
+        * id (PK)
         * liquidation_id (FK, UNIQUE)
         --
         timestamp
@@ -148,24 +155,24 @@ package "Wallet Management" {
         timestamp
         chain_id
         wallet_address (FK)
-        balance_wei
+        balance_wei (TEXT)
         balance_eth
     }
 }
 
 ' Core relationships
-user ||..o{ snapshot : "Lưu vết 1-N"
-user ||..o{ liquidation : "Ghi nhận 1-N"
+user ||..o{ snapshot 
+user ||..o{ liquidation 
 
 ' Snapshot relationships (1-1 with cascade config)
-liquidation ||--|| exec_snap : "1-1"
-liquidation ||--|| event_snap : "1-1"
-liquidation ||--|| oracle_snap : "1-1"
-liquidation ||--|| profit_snap : "1-1"
-liquidation ||--|| provider_snap : "1-1"
-liquidation ||--|| risk_snap : "1-1"
-liquidation ||--|| strat_snap : "1-1"
+liquidation ||--|| exec_snap 
+liquidation ||--|| event_snap
+liquidation ||--|| oracle_snap
+liquidation ||--|| profit_snap
+liquidation ||--|| provider_snap
+liquidation ||--|| risk_snap 
+liquidation ||--|| strat_snap
 
 ' Wallet relationships
-wallet_registry ||..o{ wallet_snapshot : "Lịch sử ví 1-N"
+wallet_registry ||..o{ wallet_snapshot
 @enduml
