@@ -287,6 +287,14 @@ function renderProfitChart(points) {
       responsive: true,
       maintainAspectRatio: false,
       animation: false,
+      scales: {
+        x: {
+          ticks: {
+            autoSkip: true,
+            maxTicksLimit: 12,
+          },
+        },
+      },
       plugins: {
         legend: { position: "bottom" },
       },

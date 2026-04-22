@@ -132,7 +132,22 @@ button {
 
 .chart-card {
   padding: 16px;
-  min-height: 360px;
+  display: flex;
+  flex-direction: column;
+}
+
+.chart-canvas-wrap {
+  position: relative;
+  height: 320px;
+  min-height: 320px;
+  max-height: 320px;
+  overflow: hidden;
+}
+
+.chart-canvas-wrap canvas {
+  width: 100% !important;
+  height: 100% !important;
+  display: block;
 }
 
 .card-title {
@@ -215,6 +230,12 @@ th, td {
     flex-direction: column;
     align-items: stretch;
   }
+
+  .chart-canvas-wrap {
+    height: 280px;
+    min-height: 280px;
+    max-height: 280px;
+  }
 }
 
 @media (max-width: 560px) {
@@ -224,5 +245,11 @@ th, td {
 
   h1 {
     font-size: 24px;
+  }
+
+  .chart-canvas-wrap {
+    height: 240px;
+    min-height: 240px;
+    max-height: 240px;
   }
 }
