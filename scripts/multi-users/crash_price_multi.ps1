@@ -310,26 +310,44 @@ if (-not $allWillBeLiquidatable) {
 
 $newPriceHex = "0x" + ([Convert]::ToString([long]$newPrice, 16)).PadLeft(64, '0')
 
-# ============================================================================
-# STEP 4: Update gia tren MockPriceFeed (ghi de bytecode / setAnswer)
-# ============================================================================
+# ==========================================================================
+# STEP 4: Update gia tren MockPriceFeed (replace bytecode / setAnswer)
+# ==========================================================================
 Write-Step "4/5" "Cap nhat ETH price -> `$$newPriceUSD"
 
 $targetFeeds = @($WETH_PRICE_SOURCE)
 if ($ETH_USD_FEED -ne $WETH_PRICE_SOURCE) { $targetFeeds += $ETH_USD_FEED }
 
+$mockJsonPath = "out\MockPriceFeed.sol\MockPriceFeed.json"
+if (-not (Test-Path $mockJsonPath)) {
+    Write-Host "  [!] MockPriceFeed chua compile, dang compile..." -ForegroundColor Yellow
+    $null = Invoke-Expression "forge build contracts/MockPriceFeed.sol 2>&1"
+}
+
+if (-not (Test-Path $mockJsonPath)) {
+    Write-Host "  [X] Khong tim thay MockPriceFeed bytecode!" -ForegroundColor Red
+    exit 1
+}
+
+$mockJson = Get-Content $mockJsonPath | ConvertFrom-Json
+$deployedBytecode = $mockJson.deployedBytecode.object
+
 foreach ($feed in $targetFeeds) {
     Write-Host "  [>] Cap nhat feed: $feed" -ForegroundColor Gray
 
-    # Dam bao decimals = 8
+    # Replace code before setAnswer(); neu khong setAnswer se luon fail tren feed that.
+    Invoke-Cast "rpc hardhat_setCode $feed $deployedBytecode" | Out-Null
+    Write-Host "  [OK] Contract code replaced" -ForegroundColor Green
+
+    # Dam bao decimals = 8 cho parser.
     Invoke-Cast "rpc hardhat_setStorageAt $feed `"0x0000000000000000000000000000000000000000000000000000000000000001`" `"0x0000000000000000000000000000000000000000000000000000000000000008`"" | Out-Null
 
-    # Thu setAnswer() de emit AnswerUpdated event (bot co the catch WS)
+    # Thu setAnswer() de emit AnswerUpdated event (bot co the catch WS).
     $setAnswerOut = Invoke-Cast "send $feed `"setAnswer(int256)`" $newPrice --private-key $DEPLOYER_KEY --gas-limit 5000000 --legacy"
     if ($setAnswerOut -match "0x[a-fA-F0-9]{64}") {
         Write-Host "  [OK] setAnswer() - AnswerUpdated event emitted" -ForegroundColor Green
     } else {
-        # Fallback: ghi storage slot 0
+        # Fallback: ghi storage slot 0.
         Write-Host "  [!] setAnswer that bai, fallback storage slot 0..." -ForegroundColor Yellow
         Invoke-Cast "rpc hardhat_setStorageAt $feed `"0x0000000000000000000000000000000000000000000000000000000000000000`" $newPriceHex" | Out-Null
         Write-Host "  [OK] Storage slot 0 da duoc ghi: $newPrice" -ForegroundColor Green

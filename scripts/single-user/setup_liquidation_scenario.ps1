@@ -690,9 +690,9 @@ Write-Host ""
 Write-Host "  --> Buoc tiep theo:" -ForegroundColor Yellow
 if ($finalHF -gt 1.20) {
     $suggestedDrop = [math]::Min([int]$neededDrop + 5, 95)
-    Write-Host "     1. .\scripts\crash_price.ps1 -PriceDrop $suggestedDrop  - Crash ${suggestedDrop}%" -ForegroundColor Yellow
+    Write-Host "     1. .\scripts\single-user\crash_price.ps1 -PriceDrop $suggestedDrop  - Crash ${suggestedDrop}%" -ForegroundColor Yellow
 } else {
-    Write-Host "     1. .\scripts\crash_price.ps1              - Crash gia ETH" -ForegroundColor Yellow
+    Write-Host "     1. .\scripts\single-user\crash_price.ps1              - Crash gia ETH" -ForegroundColor Yellow
 }
 Write-Host "     2. cargo test executor                   - Integration test" -ForegroundColor Yellow
 Write-Host "     3. cargo run                             - Chay bot" -ForegroundColor Yellow

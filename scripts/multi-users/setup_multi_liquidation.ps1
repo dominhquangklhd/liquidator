@@ -11,10 +11,10 @@
 # Yeu cau: Hardhat dang chay (scripts/start_hardhat.ps1)
 #
 # Cach dung:
-#   .\scripts\multi_users\setup_multi_liquidation.ps1                     # 10 borrowers, mainnet fork
-#   .\scripts\multi_users\setup_multi_liquidation.ps1 -Network sepolia
-#   .\scripts\multi_users\setup_multi_liquidation.ps1 -SupplyEthPerUser 5 # 5 WETH moi user
-#   .\scripts\multi_users\setup_multi_liquidation.ps1 -BorrowRatio 0.95   # Vay 95% capacity
+#   .\scripts\multi-users\setup_multi_liquidation.ps1                     # 10 borrowers, mainnet fork
+#   .\scripts\multi-users\setup_multi_liquidation.ps1 -Network sepolia
+#   .\scripts\multi-users\setup_multi_liquidation.ps1 -SupplyEthPerUser 5 # 5 WETH moi user
+#   .\scripts\multi-users\setup_multi_liquidation.ps1 -BorrowRatio 0.95   # Vay 95% capacity
 # ============================================================================
 
 param(
@@ -535,7 +535,7 @@ $maxHF = ($borrowerResults | Measure-Object -Property HF -Maximum).Maximum
 if ($null -ne $maxHF -and $maxHF -lt 999999) {
     $neededDrop = [math]::Round((1 - 1.0 / $maxHF) * 100 + 5, 0)
     Write-Host "  --> Buoc tiep theo:" -ForegroundColor Yellow
-    Write-Host "     1. .\scripts\crash_price_multi.ps1 -PriceDrop $neededDrop" -ForegroundColor Yellow
+    Write-Host "     1. .\scripts\multi-users\crash_price_multi.ps1 -PriceDrop $neededDrop" -ForegroundColor Yellow
     Write-Host "     2. cargo test executor                   - Integration test" -ForegroundColor Yellow
     Write-Host "     3. cargo run                             - Chay liquidator bot" -ForegroundColor Yellow
 }
