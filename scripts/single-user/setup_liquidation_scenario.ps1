@@ -10,9 +10,9 @@
 # Yeu cau: Hardhat dang chay (scripts/start_hardhat.ps1)
 #
 # Cach dung:
-#   .\scripts\setup_liquidation_scenario.ps1              # Auto-detect network
-#   .\scripts\setup_liquidation_scenario.ps1 -Network mainnet
-#   .\scripts\setup_liquidation_scenario.ps1 -Network sepolia
+#   .\scripts\single-user\setup_liquidation_scenario.ps1              # Auto-detect network
+#   .\scripts\single-user\setup_liquidation_scenario.ps1 -Network mainnet
+#   .\scripts\single-user\setup_liquidation_scenario.ps1 -Network sepolia
 # ============================================================================
 
 param(

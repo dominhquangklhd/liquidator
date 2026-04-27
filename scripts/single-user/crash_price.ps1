@@ -12,8 +12,8 @@
 #   - Da chay setup_liquidation_scenario.ps1
 #
 # Cach dung:
-#   .\scripts\crash_price.ps1 [-PriceDrop 30]  # Drop 30%
-#   .\scripts\crash_price.ps1 -Network sepolia -PriceDrop 25
+#   .\scripts\single-user\crash_price.ps1 [-PriceDrop 30]  # Drop 30%
+#   .\scripts\single-user\crash_price.ps1 -Network sepolia -PriceDrop 25
 # ============================================================================
 
 param(
