@@ -49,28 +49,44 @@ pub async fn bootstrap_onchain_state(
     risk_config: &RiskEngineConfig,
 ) -> Result<()> {
     // Prefer Aave subgraph top users (HF <= 2), then fallback to DB/env.
+    // In all cases, also include Hardhat default accounts so local testing users
+    // are always bootstrapped even when subgraph is configured and healthy.
     let subgraph_users = fetch_top_users_from_subgraph().await.unwrap_or_default();
-    let bootstrap_users: Vec<Address> = if !subgraph_users.is_empty() {
+    let mut candidate_set = HashSet::new();
+    let mut source_label = "subgraph";
+
+    if !subgraph_users.is_empty() {
         tracing::info!(
             "Bootstrap candidates loaded from subgraph: {} users",
             subgraph_users.len()
         );
-        subgraph_users
+        candidate_set.extend(subgraph_users);
     } else {
+        source_label = "db_env_fallback";
         let db_users = storage.load_all_user_addresses().await.unwrap_or_default();
         let env_users = parse_bootstrap_users_from_env();
 
-        let mut user_set = HashSet::new();
-        user_set.extend(db_users);
-        user_set.extend(env_users);
+        candidate_set.extend(db_users);
+        candidate_set.extend(env_users);
 
-        let users: Vec<Address> = user_set.into_iter().collect();
+        let fallback_count = candidate_set.len();
         tracing::warn!(
             "Subgraph returned no users, fallback to DB+env candidates: {} users",
-            users.len()
+            fallback_count
         );
-        users
-    };
+    }
+
+    let hardhat_users = hardhat_default_accounts();
+    let hardhat_user_set: HashSet<Address> = hardhat_users.iter().copied().collect();
+    candidate_set.extend(hardhat_users);
+
+    let bootstrap_users: Vec<Address> = candidate_set.into_iter().collect();
+    tracing::info!(
+        "Bootstrap candidate merge complete: source={} + hardhat_default=20 => total={} users",
+        source_label,
+        bootstrap_users.len()
+    );
+
     if bootstrap_users.is_empty() {
         tracing::info!("No bootstrap users available, skip on-chain bootstrap");
         return Ok(());
@@ -155,6 +171,7 @@ pub async fn bootstrap_onchain_state(
     let mut onchain_read_ok = 0usize;
     let mut onchain_read_failed = 0usize;
     let mut hf_le_2_count = 0usize;
+    let mut hardhat_included_count = 0usize;
 
     for user_addr in bootstrap_users {
         let onchain = pool.get_user_account_data(user_addr).call().await;
@@ -231,18 +248,28 @@ pub async fn bootstrap_onchain_state(
             last_updated: chrono::Utc::now().timestamp(),
         };
 
+        let is_hardhat_user = hardhat_user_set.contains(&user_addr);
         if hf <= 2.0 {
             hf_le_2_count += 1;
+        }
+
+        // Always keep Hardhat default accounts so local testing addresses are
+        // persisted even when they have no debt / high HF.
+        if hf <= 2.0 || is_hardhat_user {
+            if is_hardhat_user {
+                hardhat_included_count += 1;
+            }
             candidates.push((user_id, user, target));
         }
     }
 
     tracing::info!(
-        "Bootstrap verification: candidates={} onchain_ok={} onchain_failed={} hf<=2={} before_top100={}",
+        "Bootstrap verification: candidates={} onchain_ok={} onchain_failed={} hf<=2={} hardhat_included={} before_top100={}",
         bootstrap_candidate_count,
         onchain_read_ok,
         onchain_read_failed,
         hf_le_2_count,
+        hardhat_included_count,
         candidates.len()
     );
 
@@ -337,6 +364,36 @@ fn parse_bootstrap_users_from_env() -> Vec<Address> {
     } else {
         from_env
     }
+}
+
+fn hardhat_default_accounts() -> Vec<Address> {
+    const HARDHAT_DEFAULT_ACCOUNTS: [&str; 20] = [
+        "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+        "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+        "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
+        "0x90F79bf6EB2c4f870365E785982E1f101E93b906",
+        "0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65",
+        "0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc",
+        "0x976EA74026E726554dB657fA54763abd0C3a0aa9",
+        "0x14dC79964da2C08b23698B3D3cc7Ca32193d9955",
+        "0x23618e81E3f5cdF7f54C3d65f7FBc0aBf5B21E8f",
+        "0xa0Ee7A142d267C1f36714E4a8F75612F20a79720",
+        "0xBcd4042DE499D14e55001CcbB24a551F3b954096",
+        "0x71bE63f3384f5fb98995898A86B02Fb2426c5788",
+        "0xFAbb0ac9d68B0B445fB7357272Ff202C5651694a",
+        "0x1CBd3b2770909D4e10f157cABC84C7264073C9Ec",
+        "0xdF3e18d64BC6A983f673Ab319CCaE4f1a57C7097",
+        "0xcd3B766CCDd6AE721141F452C550Ca635964ce71",
+        "0x2546bA897922A2A352FfE7dE5D0b43F5c5e0fA4B",
+        "0xbDA5747bfd65F08deb54cb465eb87D40e51B197E",
+        "0xdD2FD4581271e230360230F9337D5c0430Bf44C0",
+        "0x8626f6940E2eb28930eFb4CeF49B2d1F2C9C1199",
+    ];
+
+    HARDHAT_DEFAULT_ACCOUNTS
+        .iter()
+        .filter_map(|raw| raw.parse::<Address>().ok())
+        .collect()
 }
 
 async fn fetch_top_users_from_subgraph() -> Result<Vec<Address>> {

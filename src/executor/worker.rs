@@ -17,7 +17,7 @@ use crate::storage::{
     RiskSnapshot,
     StrategySnapshot,
 };
-use crate::profit::ProfitCalculator;
+use crate::profit::{ProfitCalculator, ProfitEstimate};
 use crate::strategy::{ExecutionMethod, StrategyDecider};
 use ethers::types::{Address, U256};
 use serde_json::json;
@@ -108,6 +108,22 @@ fn resolve_token_address(asset: &str, chain_id: u64) -> Option<Address> {
     default.parse::<Address>().ok()
 }
 
+async fn drop_unprofitable_targets_from_cache(
+    storage: &Arc<HybridStorage>,
+    estimates: &[ProfitEstimate],
+) -> usize {
+    let mut dropped = 0usize;
+
+    for estimate in estimates {
+        if estimate.net_profit_usd < 0.0 {
+            storage.remove_target(&estimate.user_address).await;
+            dropped += 1;
+        }
+    }
+
+    dropped
+}
+
 /// Run the executor worker as a background task
 /// 
 /// This is the main liquidation loop that:
@@ -124,6 +140,8 @@ pub async fn executor_worker(
 ) {
     let mut ticker = interval(Duration::from_millis(config.check_interval_ms));
     let mut last_skip_reason_log = Instant::now() - Duration::from_secs(10);
+    let mut last_liquidatable_log = Instant::now() - Duration::from_secs(10);
+    let mut last_liquidatable_count: Option<usize> = None;
     
     tracing::info!(
         "Executor worker started (interval: {}ms, batch: {}, threshold: {}, strategy: {})",
@@ -153,7 +171,16 @@ pub async fn executor_worker(
             continue;
         }
         
-        tracing::info!("Found {} liquidatable targets", liquidatable.len());
+        let liquidatable_count = liquidatable.len();
+        let should_log_liquidatable_count =
+            last_liquidatable_count != Some(liquidatable_count)
+                || last_liquidatable_log.elapsed() >= Duration::from_secs(5);
+
+        if should_log_liquidatable_count {
+            tracing::info!("Found {} liquidatable targets", liquidatable_count);
+            last_liquidatable_count = Some(liquidatable_count);
+            last_liquidatable_log = Instant::now();
+        }
         
         // Keep strategy context in sync with current wallet balance.
         if let Some(ref decider) = strategy_decider {
@@ -186,6 +213,14 @@ pub async fn executor_worker(
                     })
                     .collect::<Vec<_>>()
             } else if let Some(ref decider) = strategy_decider {
+                let dropped = drop_unprofitable_targets_from_cache(&storage, &estimates).await;
+                if dropped > 0 {
+                    tracing::info!(
+                        "Dropped {} unprofitable targets (net_profit < 0) from hot cache; waiting for fresh events to re-evaluate",
+                        dropped
+                    );
+                }
+
                 let chain_id = executor.chain_id().await.unwrap_or(1);
                 let estimates_by_user: std::collections::HashMap<_, _> = estimates
                     .iter()
@@ -280,6 +315,14 @@ pub async fn executor_worker(
                     }
                     Err(e) => {
                         tracing::warn!("Strategy planning failed: {:?}, fallback to profitable filter", e);
+                        let dropped = drop_unprofitable_targets_from_cache(&storage, &estimates).await;
+                        if dropped > 0 {
+                            tracing::info!(
+                                "Dropped {} unprofitable targets (net_profit < 0) from hot cache; waiting for fresh events to re-evaluate",
+                                dropped
+                            );
+                        }
+
                         let profitable_by_user: std::collections::HashMap<_, _> = estimates
                             .iter()
                             .filter(|e| e.is_profitable)
@@ -301,6 +344,14 @@ pub async fn executor_worker(
                     }
                 }
             } else {
+                let dropped = drop_unprofitable_targets_from_cache(&storage, &estimates).await;
+                if dropped > 0 {
+                    tracing::info!(
+                        "Dropped {} unprofitable targets (net_profit < 0) from hot cache; waiting for fresh events to re-evaluate",
+                        dropped
+                    );
+                }
+
                 let profitable_by_user: std::collections::HashMap<_, _> = estimates
                     .iter()
                     .filter(|e| e.is_profitable)

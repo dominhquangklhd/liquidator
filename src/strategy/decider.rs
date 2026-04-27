@@ -349,7 +349,7 @@ impl StrategyDecider {
         
         let plan = ExecutionPlan::from_targets(prioritized, total_input);
         
-        tracing::info!("{}", plan.summary());
+        tracing::debug!("{}", plan.summary());
         
         Ok(plan)
     }
