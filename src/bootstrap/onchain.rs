@@ -193,6 +193,9 @@ pub async fn bootstrap_onchain_state(
             if let Some(mut weth) = engine.assets.get_mut("WETH") {
                 weth.liquidation_threshold = current_lt;
             }
+            if let Some(mut wsteth) = engine.assets.get_mut("WSTETH") {
+                wsteth.liquidation_threshold = current_lt;
+            }
             if let Some(mut eth) = engine.assets.get_mut("ETH") {
                 eth.liquidation_threshold = current_lt;
             }
@@ -202,8 +205,16 @@ pub async fn bootstrap_onchain_state(
         let mut user = User::new(user_id.clone());
 
         if collateral_usd > 0.0 && eth_price_usd > 0.0 {
+            let collateral_amount_in_eth = collateral_usd / eth_price_usd;
+            // For this synthetic bootstrap path we only know account-level totals.
+            // Prefer WSTETH reserve when available (mainnet scenario), otherwise WETH.
+            let collateral_symbol = if reserve_catalog.contains_key("WSTETH") {
+                "WSTETH"
+            } else {
+                "WETH"
+            };
             user.collateral
-                .insert("WETH".to_string(), collateral_usd / eth_price_usd);
+                .insert(collateral_symbol.to_string(), collateral_amount_in_eth);
         }
 
         if debt_usd > 0.0 {
@@ -226,7 +237,13 @@ pub async fn bootstrap_onchain_state(
 
         let mut collateral_map = HashMap::new();
         if collateral_usd > 0.0 && eth_price_usd > 0.0 {
-            collateral_map.insert("WETH".to_string(), collateral_usd / eth_price_usd);
+            let collateral_amount_in_eth = collateral_usd / eth_price_usd;
+            let collateral_symbol = if reserve_catalog.contains_key("WSTETH") {
+                "WSTETH"
+            } else {
+                "WETH"
+            };
+            collateral_map.insert(collateral_symbol.to_string(), collateral_amount_in_eth);
         }
 
         let mut debt_map = HashMap::new();
@@ -302,6 +319,11 @@ pub async fn bootstrap_onchain_state(
             engine
                 .registry
                 .add_user_to_asset("ETH".to_string(), user_id.clone());
+        }
+        if user.collateral.contains_key("WSTETH") {
+            engine
+                .registry
+                .add_user_to_asset("WSTETH".to_string(), user_id.clone());
         }
         if user.debt.contains_key("USDC") {
             engine

@@ -108,7 +108,7 @@ impl StrategyConfig {
     pub fn local_fork() -> Self {
         Self {
             min_wallet_balance_eth: 0.1,
-            direct_max_debt_usd: 50_000.0,
+            direct_max_debt_usd: 250_000.0,
             direct_gas_limit: 500_000,
             
             weight_profit: 0.5,
