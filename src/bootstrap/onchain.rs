@@ -9,6 +9,7 @@ use ethers::types::{Address, H160, U256};
 use reqwest::Client;
 use serde_json::{json, Value};
 
+use crate::aave_v3::reader::AaveV3Reader;
 use crate::data::asset::Asset;
 use crate::data::user::User;
 use crate::risk::bucket::RiskBucket;
@@ -46,6 +47,7 @@ pub async fn bootstrap_onchain_state(
     chain_id: u64,
     aave_pool_address: H160,
     aave_oracle_address: H160,
+    aave_data_provider_address: H160,
     risk_config: &RiskEngineConfig,
 ) -> Result<()> {
     // Prefer Aave subgraph top users (HF <= 2), then fallback to DB/env.
@@ -133,6 +135,8 @@ pub async fn bootstrap_onchain_state(
 
         let decimals = if symbol == "USDC" || symbol == "USDT" {
             6
+        } else if symbol == "WBTC" {
+            8
         } else {
             18
         };
@@ -165,6 +169,30 @@ pub async fn bootstrap_onchain_state(
         );
         assets_loaded += 1;
     }
+
+    // ── Initialize AaveV3Reader for real per-reserve position reads ──
+    // Build reverse map: reserve address -> symbol (used by reader)
+    let reverse_reserve_map: HashMap<Address, String> = reserve_catalog
+        .iter()
+        .map(|(sym, addr)| (*addr, sym.clone()))
+        .collect();
+
+    let mut aave_reader = AaveV3Reader::new(
+        aave_pool_address,
+        aave_data_provider_address,
+        Arc::clone(&rpc),
+    );
+
+    if let Err(e) = aave_reader.init_reserves(&reverse_reserve_map).await {
+        tracing::warn!("AaveV3Reader init_reserves failed, falling back to heuristic: {:?}", e);
+    } else {
+        tracing::info!(
+            "AaveV3Reader initialized with {} on-chain reserves",
+            aave_reader.reserves().len()
+        );
+    }
+
+    let reader_available = !aave_reader.reserves().is_empty();
 
     let pool = BootstrapAavePool::new(aave_pool_address, Arc::clone(&rpc));
     let mut candidates: Vec<(String, User, LiquidationTarget)> = Vec::new();
@@ -204,21 +232,85 @@ pub async fn bootstrap_onchain_state(
         let user_id = format!("{:?}", user_addr);
         let mut user = User::new(user_id.clone());
 
-        if collateral_usd > 0.0 && eth_price_usd > 0.0 {
-            let collateral_amount_in_eth = collateral_usd / eth_price_usd;
-            // For this synthetic bootstrap path we only know account-level totals.
-            // Prefer WSTETH reserve when available (mainnet scenario), otherwise WETH.
-            let collateral_symbol = if reserve_catalog.contains_key("WSTETH") {
-                "WSTETH"
-            } else {
-                "WETH"
-            };
-            user.collateral
-                .insert(collateral_symbol.to_string(), collateral_amount_in_eth);
-        }
+        // ── Real per-reserve position read via AaveV3Reader ──
+        // Instead of guessing all collateral = WSTETH and all debt = USDC,
+        // we read each reserve's actual balance for this user.
+        if reader_available {
+            match aave_reader.load_user_position(user_addr).await {
+                Ok(pos) => {
+                    // Collateral: only include reserves where collateral is enabled
+                    for (symbol, amount) in &pos.collateral {
+                        if pos.collateral_enabled.contains(symbol) {
+                            user.collateral.insert(symbol.clone(), *amount);
+                        }
+                    }
+                    // Debt: combine variable + stable debt per asset
+                    for (symbol, amount) in &pos.debt_variable {
+                        *user.debt.entry(symbol.clone()).or_insert(0.0) += amount;
+                    }
+                    for (symbol, amount) in &pos.debt_stable {
+                        *user.debt.entry(symbol.clone()).or_insert(0.0) += amount;
+                    }
 
-        if debt_usd > 0.0 {
-            user.debt.insert("USDC".to_string(), debt_usd);
+                    // ── Skip user if any token is unsupported by the system ──
+                    let unsupported: Vec<&String> = user.collateral.keys()
+                        .chain(user.debt.keys())
+                        .filter(|sym| !engine.assets.contains_key(sym.as_str()))
+                        .collect();
+
+                    if !unsupported.is_empty() {
+                        tracing::info!(
+                            "Skip user {:?}: unsupported tokens {:?}",
+                            user_addr,
+                            unsupported,
+                        );
+                        continue;
+                    }
+
+                    // Sanity check: compare reconstructed totals with account-level data
+                    let reconstructed_collateral_usd: f64 = user.collateral.iter()
+                        .filter_map(|(sym, amt)| {
+                            engine.assets.get(sym).map(|a| amt * a.price_in_eth * eth_price_usd)
+                        })
+                        .sum();
+                    let reconstructed_debt_usd: f64 = user.debt.iter()
+                        .filter_map(|(sym, amt)| {
+                            engine.assets.get(sym).map(|a| amt * a.price_in_eth * eth_price_usd)
+                        })
+                        .sum();
+
+                    let collateral_drift = if collateral_usd > 0.0 {
+                        ((reconstructed_collateral_usd - collateral_usd) / collateral_usd).abs()
+                    } else {
+                        0.0
+                    };
+                    let debt_drift = if debt_usd > 0.0 {
+                        ((reconstructed_debt_usd - debt_usd) / debt_usd).abs()
+                    } else {
+                        0.0
+                    };
+
+                    if collateral_drift > 0.05 || debt_drift > 0.05 {
+                        tracing::warn!(
+                            "Position drift for {:?}: collateral ${:.2} vs ${:.2} ({:.1}%), debt ${:.2} vs ${:.2} ({:.1}%)",
+                            user_addr,
+                            reconstructed_collateral_usd, collateral_usd, collateral_drift * 100.0,
+                            reconstructed_debt_usd, debt_usd, debt_drift * 100.0,
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Skip user {:?}: reader failed: {:?}",
+                        user_addr, e
+                    );
+                    continue;
+                }
+            }
+        } else {
+            // Reader not initialized — cannot read real position, skip user
+            tracing::warn!("Skip user {:?}: AaveV3Reader not available", user_addr);
+            continue;
         }
 
         user.health_factor = hf;
@@ -235,22 +327,6 @@ pub async fn bootstrap_onchain_state(
             * risk_config.risk_score_max)
             .clamp(risk_config.risk_score_min, risk_config.risk_score_max) as u8;
 
-        let mut collateral_map = HashMap::new();
-        if collateral_usd > 0.0 && eth_price_usd > 0.0 {
-            let collateral_amount_in_eth = collateral_usd / eth_price_usd;
-            let collateral_symbol = if reserve_catalog.contains_key("WSTETH") {
-                "WSTETH"
-            } else {
-                "WETH"
-            };
-            collateral_map.insert(collateral_symbol.to_string(), collateral_amount_in_eth);
-        }
-
-        let mut debt_map = HashMap::new();
-        if debt_usd > 0.0 {
-            debt_map.insert("USDC".to_string(), debt_usd);
-        }
-
         let target = LiquidationTarget {
             user_address: user_id.clone(),
             health_factor: hf,
@@ -258,8 +334,8 @@ pub async fn bootstrap_onchain_state(
             total_debt_usd: debt_usd,
             ltv,
             liquidation_threshold: risk_config.default_liquidation_threshold,
-            collateral: collateral_map,
-            debt: debt_map,
+            collateral: user.collateral.clone(),
+            debt: user.debt.clone(),
             estimated_profit: 0.0,
             risk_score,
             last_updated: chrono::Utc::now().timestamp(),
@@ -311,24 +387,23 @@ pub async fn bootstrap_onchain_state(
             hot_cache_eligible += 1;
         }
 
-        if user.collateral.contains_key("WETH") {
+        // Register user for ALL their actual collateral and debt assets
+        // so price updates on any relevant asset trigger HF recalculation.
+        for asset_sym in user.collateral.keys() {
             engine
                 .registry
-                .add_user_to_asset("WETH".to_string(), user_id.clone());
-            // Also track ETH so oracle ETH updates can trigger recalculation.
-            engine
-                .registry
-                .add_user_to_asset("ETH".to_string(), user_id.clone());
+                .add_user_to_asset(asset_sym.clone(), user_id.clone());
+            // WETH users also tracked under ETH for oracle compatibility
+            if asset_sym == "WETH" {
+                engine
+                    .registry
+                    .add_user_to_asset("ETH".to_string(), user_id.clone());
+            }
         }
-        if user.collateral.contains_key("WSTETH") {
+        for asset_sym in user.debt.keys() {
             engine
                 .registry
-                .add_user_to_asset("WSTETH".to_string(), user_id.clone());
-        }
-        if user.debt.contains_key("USDC") {
-            engine
-                .registry
-                .add_user_to_asset("USDC".to_string(), user_id.clone());
+                .add_user_to_asset(asset_sym.clone(), user_id.clone());
         }
 
         engine.users.insert(user_id.clone(), user);
@@ -776,3 +851,4 @@ fn default_liquidation_threshold(symbol: &str, _chain_id: u64) -> f64 {
         _ => 0.85,
     }
 }
+

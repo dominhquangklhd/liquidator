@@ -2,6 +2,7 @@
 //
 // This allows examples and tests to use internal modules
 
+pub mod aave_v3;
 pub mod storage;
 pub mod data;
 pub mod events;

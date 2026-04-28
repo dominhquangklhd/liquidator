@@ -118,6 +118,15 @@ impl RiskEngine {
             return;
         }
 
+        // Skip unsupported assets — we cannot price them for HF calculation
+        if !self.assets.contains_key(&asset_id) {
+            tracing::debug!(
+                "[user_deposit] skipped unsupported asset={} user={}",
+                asset_id, user_id
+            );
+            return;
+        }
+
         let mut should_recalculate = false;
         if let Some(mut user) = self.users.get_mut(&user_id) {
             let balance = user.collateral.entry(asset_id.clone()).or_insert(0.0);
@@ -148,6 +157,15 @@ impl RiskEngine {
 
     async fn handle_user_withdraw(&self, user_id: UserId, asset_id: AssetId, amount: f64) {
         if amount <= 0.0 {
+            return;
+        }
+
+        // Skip unsupported assets — we cannot price them for HF calculation
+        if !self.assets.contains_key(&asset_id) {
+            tracing::debug!(
+                "[user_withdraw] skipped unsupported asset={} user={}",
+                asset_id, user_id
+            );
             return;
         }
 
@@ -193,6 +211,15 @@ impl RiskEngine {
             return;
         }
 
+        // Skip unsupported assets — we cannot price them for HF calculation
+        if !self.assets.contains_key(&asset_id) {
+            tracing::debug!(
+                "[user_borrow] skipped unsupported asset={} user={}",
+                asset_id, user_id
+            );
+            return;
+        }
+
         let mut should_recalculate = false;
         if let Some(mut user) = self.users.get_mut(&user_id) {
             let balance = user.debt.entry(asset_id.clone()).or_insert(0.0);
@@ -223,6 +250,15 @@ impl RiskEngine {
 
     async fn handle_user_repay(&self, user_id: UserId, asset_id: AssetId, amount: f64) {
         if amount <= 0.0 {
+            return;
+        }
+
+        // Skip unsupported assets — we cannot price them for HF calculation
+        if !self.assets.contains_key(&asset_id) {
+            tracing::debug!(
+                "[user_repay] skipped unsupported asset={} user={}",
+                asset_id, user_id
+            );
             return;
         }
 

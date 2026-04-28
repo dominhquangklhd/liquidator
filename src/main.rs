@@ -1,3 +1,4 @@
+mod aave_v3;
 mod events;
 mod risk;
 mod data;
@@ -76,6 +77,7 @@ async fn main() {
             return;
         }
     };
+
 
     // ============================================================================
     // PHASE 2: SETUP EVENT COMMUNICATION CHANNEL
@@ -171,6 +173,13 @@ async fn main() {
     .parse()
     .expect("Invalid Aave oracle address");
 
+    let aave_data_provider_address = env_string(
+        "AAVE_DATA_PROVIDER_ADDRESS",
+        "0x7B4EB56E7CD4b454BA8ff71E4518426c3f71b3d6",
+    )
+    .parse()
+    .expect("Invalid Aave data provider address");
+
     if let Err(e) = bootstrap_onchain_state(
         &mut engine,
         Arc::clone(&storage),
@@ -178,6 +187,7 @@ async fn main() {
         provider.chain_id(),
         aave_pool_address,
         aave_oracle_address,
+        aave_data_provider_address,
         &risk_config,
     )
     .await
