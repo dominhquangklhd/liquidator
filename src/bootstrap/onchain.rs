@@ -712,30 +712,19 @@ fn reserve_catalog_from_env(chain_id: u64) -> HashMap<String, Address> {
     out
 }
 
-fn default_reserve_catalog(chain_id: u64) -> HashMap<String, Address> {
-    let mut out = HashMap::new();
+fn default_reserve_catalog(_chain_id: u64) -> HashMap<String, Address> {
+    let mut out: HashMap<String, Address> = HashMap::new();
 
-    let pairs: [(&str, &str); 7] = if chain_id == 11155111 {
-        [
-            ("WETH", "0xC558DBdd856501FCd9aaF1E62eae57A9F0629a3c"),
-            ("USDC", "0x94a9D9AC8a22534E3FaCa9F4e7F2E2cf85d5E4C8"),
-            ("WBTC", "0x29f2D40B0605204364af54EC677bD022dA425d03"),
-            ("DAI", "0x68194a729C2450ad26072b3D33ADaCbcef39D574"),
-            ("USDT", "0xC2C527C0CACF457746Bd31B2a698Fe89de2b6d49"),
-            ("LINK", "0xf97f4df75117a78c1A5a0DBb814Af92458539FB4"),
-            ("AAVE", "0x6Ae43d3271ff6888e7Fc43Fd7321a503ff738951"),
-        ]
-    } else {
-        [
-            ("WETH", "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
-            ("USDC", "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
-            ("WBTC", "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599"),
-            ("DAI", "0x6B175474E89094C44Da98b954EedeAC495271d0F"),
-            ("USDT", "0xdAC17F958D2ee523a2206206994597C13D831ec7"),
-            ("LINK", "0x514910771AF9Ca656af840dff83E8264EcF986CA"),
-            ("AAVE", "0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DdAE9"),
-        ]
-    };
+    let pairs: [(&str, &str); 8] = [
+        ("WETH", "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+        ("WSTETH", "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"),
+        ("USDC", "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+        ("WBTC", "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599"),
+        ("DAI", "0x6B175474E89094C44Da98b954EedeAC495271d0F"),
+        ("USDT", "0xdAC17F958D2ee523a2206206994597C13D831ec7"),
+        ("LINK", "0x514910771AF9Ca656af840dff83E8264EcF986CA"),
+        ("AAVE", "0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DdAE9"),
+    ];
 
     for (symbol, addr_raw) in pairs {
         if let Ok(addr) = addr_raw.parse::<Address>() {
@@ -749,6 +738,7 @@ fn default_reserve_catalog(chain_id: u64) -> HashMap<String, Address> {
 fn fallback_price_usd(symbol: &str, eth_price_usd: f64) -> f64 {
     match symbol {
         "WETH" | "ETH" => eth_price_usd,
+        "WSTETH" => eth_price_usd,
         "USDC" | "USDT" | "DAI" => 1.0,
         "WBTC" => 60000.0,
         "LINK" => 10.0,
@@ -760,7 +750,7 @@ fn fallback_price_usd(symbol: &str, eth_price_usd: f64) -> f64 {
 fn default_liquidation_threshold(symbol: &str, _chain_id: u64) -> f64 {
     match symbol {
         // Aave V3 WETH reserve threshold used in local scenario scripts.
-        "WETH" | "ETH" => 0.83,
+        "WETH" | "ETH" | "WSTETH" => 0.83,
         _ => 0.85,
     }
 }

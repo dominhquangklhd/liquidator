@@ -1,46 +1,43 @@
 # ============================================================================
-# SETUP LIQUIDATION SCENARIO
+# SETUP LIQUIDATION SCENARIO (wstETH COLLATERAL)
 # ============================================================================
 #
-# Script nay tao kich ban liquidation tren Hardhat fork:
-#   1. Kiem tra pool USDC liquidity truoc
-#   2. Tinh toan supply WETH vua du de vay gan het USDC trong pool
-#   3. Day HF sat 1.0 de chi can crash gia nhe la liquidatable
+# Script nay tao kich ban liquidation tren mainnet fork (Hardhat):
+#   1. Mint wstETH cho 20 accounts bang storage manipulation
+#   2. Supply wstETH lam collateral tren Aave
+#   3. Borrow USDC de day HF sat 1.0
+#   4. Fund USDC cho liquidator
 #
 # Yeu cau: Hardhat dang chay (scripts/start_hardhat.ps1)
 #
 # Cach dung:
-#   .\scripts\single-user\setup_liquidation_scenario.ps1              # Mainnet fork
+#   .\scripts\single-user\setup_liquidation_scenario_wstETH.ps1
+#   .\scripts\single-user\setup_liquidation_scenario_wstETH.ps1 -SeedBorrowerWstEth 250
 # ============================================================================
 
 param(
-    [string]$RpcUrl = "http://127.0.0.1:8545"
+    [string]$RpcUrl = "http://127.0.0.1:8545",
+    [int]$SeedBorrowerWstEth = 200,
+    [int]$SeedOtherWstEth = 50,
+    [int]$WstEthBalanceSlot = 0
 )
 
-$script:RpcClientFlavor = "unknown"
-
 # ============================================================================
-# NETWORK CONFIGURATION
+# MAINNET CONFIGURATION ONLY
 # ============================================================================
 
-# Mainnet addresses (Chain ID: 1)
 $MAINNET_CONFIG = @{
     AAVE_POOL               = "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2"
     AAVE_ORACLE             = "0x54586bE62E3c3580375aE3723C145253060Ca0C2"
-    POOL_ADDRESSES_PROVIDER = "0x2f39d218133AFaB8F2B819B1066c7E434Ad94E9e"
-    ACL_MANAGER             = "0xc2aaCf6553D20d1e9571216f576571920c0FBB3d"
-    WETH                    = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+    WSTETH                  = "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"
     USDC                    = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
     WBTC                    = "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599"
-    aWETH                   = "0x4d5F47FA6A74757f35C14fD3a6Ef8E3C9BC514E8"
     aUSDC                   = "0x98C23E9d8f34FEFb1B7BD6a91B7FF122F4e16F5c"
-    ETH_USD_FEED            = "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419"
-    USDC_BALANCE_SLOT       = 9    # Mainnet USDC balanceOf mapping at slot 9
+    USDC_BALANCE_SLOT       = 9
     NetworkName             = "Ethereum Mainnet"
 }
 
-
-# Hardhat default accounts (tu dong co 10000 ETH)
+# Hardhat default accounts (Account #2 & #3)
 $BORROWER        = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"  # Account #2
 $BORROWER_KEY    = "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a"
 $LIQUIDATOR      = "0x90F79bf6EB2c4f870365E785982E1f101E93b906"  # Account #3
@@ -52,6 +49,7 @@ $LIQUIDATOR_KEY  = "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141
 
 function Invoke-CastCall {
     param([string]$CastArgs)
+
     $parsed = [regex]::Match($CastArgs, '^(?<to>0x[a-fA-F0-9]{40})\s+"(?<sig>[^"]+)"\s*(?<args>.*)$')
     if (-not $parsed.Success) {
         $cmd = "cast call $CastArgs --rpc-url $RpcUrl"
@@ -104,12 +102,12 @@ function Invoke-CastCall {
 
 function Invoke-CastSend {
     param([string]$CastArgs)
+
     $cmd = "cast send $CastArgs --rpc-url $RpcUrl"
     $result = Invoke-Expression $cmd 2>&1
     $output = ($result | Out-String).Trim()
 
     if ($LASTEXITCODE -ne 0) {
-        # Hardhat compatibility: bypass eth_estimateGas by forcing gas limit.
         $fallbackCmd = "cast send $CastArgs --rpc-url $RpcUrl --gas-limit 5000000 --legacy"
         $fallbackResult = Invoke-Expression $fallbackCmd 2>&1
         $fallbackOutput = ($fallbackResult | Out-String).Trim()
@@ -122,13 +120,12 @@ function Invoke-CastSend {
 
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  [X] Transaction FAILED!" -ForegroundColor Red
-        # Extract short error message
-        $errLines = $output -split "`n" | Select-Object -First 3
-        foreach ($line in $errLines) {
-            Write-Host "      $line" -ForegroundColor Red
+        ($output -split "`n" | Select-Object -First 3) | ForEach-Object {
+            Write-Host "      $_" -ForegroundColor Red
         }
         return $null
     }
+
     return $output
 }
 
@@ -137,13 +134,7 @@ function Invoke-CastRpc {
 
     $cmd = "cast rpc $CastArgs --rpc-url $RpcUrl"
     $result = Invoke-Expression $cmd 2>&1
-    $output = ($result | Out-String).Trim()
-
-    if ($LASTEXITCODE -eq 0) {
-        return $output
-    }
-
-    return $output
+    return (($result | Out-String).Trim())
 }
 
 function Write-Step {
@@ -156,19 +147,18 @@ function Write-Step {
 
 function Strip-CastAnnotation {
     param([string]$Value)
-    $stripped = ($Value -replace '\[.*?\]', '').Trim()
-    return $stripped
+    return (($Value -replace '\[.*?\]', '').Trim())
 }
 
 function Parse-CastValues {
     param([string]$RawData)
     $cleaned = $RawData -replace '\[.*?\]', ''
-    $values = ($cleaned.Trim() -split '\s+') | Where-Object { $_ -ne '' }
-    return $values
+    return (($cleaned.Trim() -split '\s+') | Where-Object { $_ -ne '' })
 }
 
 function Write-AccountData {
     param([string]$RawData)
+
     $values = Parse-CastValues $RawData
     if ($values.Count -ge 6) {
         $totalCollateral = [math]::Round([decimal]$values[0] / 1e8, 2)
@@ -176,7 +166,7 @@ function Write-AccountData {
         $availableBorrow = [math]::Round([decimal]$values[2] / 1e8, 2)
         $liqThreshold = [math]::Round([decimal]$values[3] / 100, 2)
         $ltv = [math]::Round([decimal]$values[4] / 100, 2)
-        
+
         $hfRaw = $values[5]
         if ($hfRaw.Length -gt 30) {
             $healthFactorDisplay = "Infinity (no debt)"
@@ -192,7 +182,7 @@ function Write-AccountData {
                 $hfColor = "Green"
             }
         }
-        
+
         Write-Host "     Total Collateral:   `$$totalCollateral" -ForegroundColor Gray
         Write-Host "     Total Debt:         `$$totalDebt" -ForegroundColor Gray
         Write-Host "     Available Borrow:   `$$availableBorrow" -ForegroundColor Gray
@@ -206,21 +196,39 @@ function Write-AccountData {
 
 function Get-HealthFactor {
     param([string]$RawData)
+
     $values = Parse-CastValues $RawData
     if ($values.Count -ge 6) {
         $hfRaw = $values[5]
-        if ($hfRaw.Length -gt 30) { return 999999.0 }
+        if ($hfRaw.Length -gt 30) {
+            return 999999.0
+        }
         return [math]::Round([decimal]$hfRaw / 1e18, 4)
     }
     return 999999.0
 }
 
+function To-WordHex {
+    param([decimal]$RawValue)
+    $big = [System.Numerics.BigInteger]::Parse(([math]::Floor($RawValue)).ToString("0"))
+    return ("0x" + $big.ToString("x").PadLeft(64, '0'))
+}
+
+function Get-HardhatAccounts {
+    $raw = Invoke-CastRpc "eth_accounts"
+    try {
+        return $raw | ConvertFrom-Json
+    } catch {
+        return @()
+    }
+}
+
 # ============================================================================
-# KIEM TRA PREREQUISITES
+# PREREQUISITES + NETWORK DETECTION (MAINNET FORK ONLY)
 # ============================================================================
 
 Write-Host "============================================" -ForegroundColor Green
-Write-Host "  SETUP LIQUIDATION SCENARIO" -ForegroundColor Green
+Write-Host "  SETUP LIQUIDATION SCENARIO (wstETH COLL)" -ForegroundColor Green
 Write-Host "============================================" -ForegroundColor Green
 
 if (-not (Get-Command "cast" -ErrorAction SilentlyContinue)) {
@@ -233,158 +241,119 @@ $chainId = ($chainIdRaw | Out-String).Trim()
 
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($chainId)) {
     Write-Host "[X] Khong ket noi duoc RPC: $RpcUrl" -ForegroundColor Red
-    Write-Host "    Hay chay truoc: .\\scripts\\start_hardhat.ps1" -ForegroundColor Yellow
+    Write-Host "    Hay chay truoc: .\scripts\start_hardhat.ps1" -ForegroundColor Yellow
     exit 1
 }
 
-# Detect RPC client flavor once to avoid noisy unsupported-method fallbacks.
-$clientVersionRaw = Invoke-Expression "cast rpc web3_clientVersion --rpc-url $RpcUrl" 2>&1
-$clientVersion = ($clientVersionRaw | Out-String).Trim().ToLowerInvariant()
-if ($LASTEXITCODE -eq 0) {
-    if ($clientVersion -match "hardhat") {
-        $script:RpcClientFlavor = "hardhat"
-    }
-}
-
-if ($script:RpcClientFlavor -eq "hardhat") {
-    Write-Host "[i] RPC client: Hardhat" -ForegroundColor DarkGray
+if ($chainId -ne "31337" -and $chainId -ne "1") {
+    Write-Host "[X] Chi ho tro mainnet fork (chainId 31337)" -ForegroundColor Red
+    exit 1
 }
 
 $CONFIG = $MAINNET_CONFIG
+$AAVE_POOL         = $CONFIG.AAVE_POOL
+$AAVE_ORACLE       = $CONFIG.AAVE_ORACLE
+$WSTETH            = $CONFIG.WSTETH
+$USDC              = $CONFIG.USDC
+$WBTC              = $CONFIG.WBTC
+$aUSDC             = $CONFIG.aUSDC
+$USDC_BALANCE_SLOT = $CONFIG.USDC_BALANCE_SLOT
 
-$AAVE_POOL              = $CONFIG.AAVE_POOL
-$AAVE_ORACLE            = $CONFIG.AAVE_ORACLE
-$POOL_ADDRESSES_PROVIDER = $CONFIG.POOL_ADDRESSES_PROVIDER
-$ACL_MANAGER            = $CONFIG.ACL_MANAGER
-$WETH                   = $CONFIG.WETH
-$USDC                   = $CONFIG.USDC
-$WBTC                   = $CONFIG.WBTC
-$aWETH                  = $CONFIG.aWETH
-$aUSDC                  = $CONFIG.aUSDC
-$ETH_USD_FEED           = $CONFIG.ETH_USD_FEED
-$USDC_BALANCE_SLOT      = $CONFIG.USDC_BALANCE_SLOT
-$NetworkName            = $CONFIG.NetworkName
-
-Write-Host "[OK] Connected to $NetworkName (Chain ID: $chainId)" -ForegroundColor Green
+Write-Host "[OK] Connected to $($CONFIG.NetworkName) fork (Chain ID: $chainId)" -ForegroundColor Green
 Write-Host "[i] Aave Pool: $AAVE_POOL" -ForegroundColor Gray
+Write-Host "[i] wstETH:    $WSTETH" -ForegroundColor Gray
 
 # ============================================================================
-# STEP 0: Kiem tra pool USDC liquidity & tinh toan supply amount
+# STEP 0: Load accounts (20) + mint wstETH via storage
 # ============================================================================
-Write-Step "0/8" "Kiem tra USDC liquidity & tinh toan"
+Write-Step "0/8" "Mint wstETH cho 20 accounts (storage manipulation)"
 
-# Kiem tra USDC available trong pool
-$poolUsdcRaw = Invoke-CastCall "$USDC `"balanceOf(address)(uint256)`" $aUSDC"
-$poolUsdcClean = Strip-CastAnnotation $poolUsdcRaw
-$poolUsdcAmount = [decimal]$poolUsdcClean   # raw USDC (6-decimal)
-$poolUsdcUSD = [math]::Round($poolUsdcAmount / 1e6, 2)
-Write-Host "  [i] USDC kha dung trong Pool: $poolUsdcUSD USDC" -ForegroundColor Gray
-
-if ($poolUsdcAmount -lt 1000000) {  # < 1 USDC
-    Write-Host "  [X] Pool khong co du USDC liquidity!" -ForegroundColor Red
+$accounts = Get-HardhatAccounts
+if ($accounts.Count -lt 20) {
+    Write-Host "[X] Khong lay du 20 accounts tu node (eth_accounts)" -ForegroundColor Red
     exit 1
 }
 
-# Lay ETH price tu Aave Oracle
-$ethPriceRaw = Invoke-CastCall "$AAVE_ORACLE `"getAssetPrice(address)(uint256)`" $WETH"
-$ethPriceClean = Strip-CastAnnotation $ethPriceRaw
-$ethPriceBase = [decimal]$ethPriceClean  # 8-decimal USD
-$ethPriceUSD = [math]::Round($ethPriceBase / 1e8, 2)
-Write-Host "  [i] ETH price (Aave Oracle): `$$ethPriceUSD" -ForegroundColor Gray
+$seedBorrowerRaw = [decimal]$SeedBorrowerWstEth * 1e18
+$seedOtherRaw = [decimal]$SeedOtherWstEth * 1e18
+$seedBorrowerHex = To-WordHex $seedBorrowerRaw
+$seedOtherHex = To-WordHex $seedOtherRaw
 
-# ── Tinh WETH can supply ──
-# Muc tieu: supply 50 WETH => co du collateral vay ~$80-95k USDC
-# Gioi han hop ly trong 1-50 WETH (Hardhat account co 10,000 ETH)
-$ltvRatio = 0.80
-$maxSupplyETH = 50   # Max 50 WETH supply
+for ($i = 0; $i -lt 20; $i++) {
+    $addr = $accounts[$i]
+    $balanceSlot = Invoke-Expression "cast index address $addr $WstEthBalanceSlot" 2>&1
+    $balanceSlot = ($balanceSlot | Out-String).Trim()
 
-# Borrow target = min(90% pool, collateral capacity)
-$maxCollateralUSD = $maxSupplyETH * $ethPriceUSD
-$maxBorrowFromCollateral = $maxCollateralUSD * $ltvRatio
-$borrowTargetUsdc6 = [math]::Min([math]::Floor($poolUsdcAmount * 0.90), $maxBorrowFromCollateral * 1e6)
-$borrowTargetUSD = [math]::Round($borrowTargetUsdc6 / 1e6, 2)
-Write-Host "  [i] Borrow target: $borrowTargetUSD USDC" -ForegroundColor Gray
+    if ($addr -eq $BORROWER) {
+        $null = Invoke-CastRpc "hardhat_setStorageAt $WSTETH $balanceSlot $seedBorrowerHex"
+    } else {
+        $null = Invoke-CastRpc "hardhat_setStorageAt $WSTETH $balanceSlot $seedOtherHex"
+    }
+}
 
-# WETH can supply = borrow / LTV / ethPrice (voi +5% buffer)
-$neededCollateralUSD = $borrowTargetUSD / $ltvRatio
-$neededWethETH = $neededCollateralUSD / $ethPriceUSD * 1.05  # +5% buffer
+$borrowerWstRaw = Invoke-CastCall "$WSTETH `"balanceOf(address)(uint256)`" $BORROWER"
+$borrowerWstVal = [decimal](Strip-CastAnnotation $borrowerWstRaw)
+$borrowerWstDisplay = [math]::Round($borrowerWstVal / 1e18, 4)
 
-# Cap: min 1 WETH, max 50 WETH
-if ($neededWethETH -lt 1) { $neededWethETH = 1 }
-if ($neededWethETH -gt $maxSupplyETH) { $neededWethETH = $maxSupplyETH }
-$supplyWethETH = [math]::Round($neededWethETH, 4)
+if ($borrowerWstVal -le 0) {
+    Write-Host "  [X] Khong set duoc wstETH cho Borrower!" -ForegroundColor Red
+    Write-Host "  [!] Thu doi slot: -WstEthBalanceSlot <slot>" -ForegroundColor Yellow
+    exit 1
+}
 
-# Convert to wei dung [decimal] (tranh overflow Int64)
-$neededWethWei = [decimal]([math]::Ceiling($supplyWethETH * 1e18))
-
-Write-Host "  [i] Supply: ~$supplyWethETH WETH (du de vay $borrowTargetUSD USDC)" -ForegroundColor Gray
+Write-Host "  [OK] Borrower wstETH: $borrowerWstDisplay" -ForegroundColor Green
+Write-Host "  [OK] Da seed wstETH cho 20 accounts" -ForegroundColor Green
 
 # ============================================================================
-# STEP 1: Wrap ETH -> WETH cho borrower
+# STEP 1: Approve + Supply wstETH collateral
 # ============================================================================
-Write-Step "1/8" "Wrap ETH -> WETH cho Borrower"
-
-$wrapAmount = [math]::Ceiling($supplyWethETH)  # Round up to whole ETH
-$result = Invoke-CastSend "$WETH `"deposit()`" --value ${wrapAmount}ether --private-key $BORROWER_KEY"
-if ($null -eq $result) { Write-Host "  [X] Wrap ETH that bai!" -ForegroundColor Red; exit 1 }
-Write-Host "  [OK] Wrapped $wrapAmount ETH -> WETH" -ForegroundColor Green
-
-$wethBalance = Invoke-CastCall "$WETH `"balanceOf(address)(uint256)`" $BORROWER"
-Write-Host "  [i] Borrower WETH balance: $wethBalance" -ForegroundColor Gray
-
-# ============================================================================
-# STEP 2: Approve WETH cho Aave Pool
-# ============================================================================
-Write-Step "2/8" "Approve WETH cho Aave Pool"
+Write-Step "1/8" "Approve + Supply wstETH collateral"
 
 $maxApproval = "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-$result = Invoke-CastSend "$WETH `"approve(address,uint256)`" $AAVE_POOL $maxApproval --private-key $BORROWER_KEY"
-if ($null -eq $result) { Write-Host "  [X] Approve that bai!" -ForegroundColor Red; exit 1 }
-Write-Host "  [OK] WETH approved" -ForegroundColor Green
+$result = Invoke-CastSend "$WSTETH `"approve(address,uint256)`" $AAVE_POOL $maxApproval --private-key $BORROWER_KEY"
+if ($null -eq $result) { Write-Host "  [X] Approve wstETH that bai!" -ForegroundColor Red; exit 1 }
+Write-Host "  [OK] wstETH approved" -ForegroundColor Green
 
-# ============================================================================
-# STEP 3: Supply WETH vao Aave (collateral)
-# ============================================================================
-Write-Step "3/8" "Supply WETH vao Aave lam Collateral"
+$supplyWstRaw = [math]::Floor($borrowerWstVal * 0.75)
+if ($supplyWstRaw -lt 1e16) {
+    Write-Host "  [X] Supply amount qua nho!" -ForegroundColor Red
+    exit 1
+}
+$supplyWstDisplay = [math]::Round([decimal]$supplyWstRaw / 1e18, 4)
 
-$supplyAmount = $neededWethWei.ToString("0")  # decimal -> string (no scientific notation)
-Write-Host "  [>] Supplying $supplyWethETH WETH..." -ForegroundColor Gray
-$result = Invoke-CastSend "$AAVE_POOL `"supply(address,uint256,address,uint16)`" $WETH $supplyAmount $BORROWER 0 --private-key $BORROWER_KEY"
-if ($null -eq $result) { Write-Host "  [X] Supply that bai!" -ForegroundColor Red; exit 1 }
-Write-Host "  [OK] Supplied $supplyWethETH WETH" -ForegroundColor Green
+Write-Host "  [>] Supplying $supplyWstDisplay wstETH..." -ForegroundColor Gray
+$result = Invoke-CastSend "$AAVE_POOL `"supply(address,uint256,address,uint16)`" $WSTETH $supplyWstRaw $BORROWER 0 --private-key $BORROWER_KEY"
+if ($null -eq $result) { Write-Host "  [X] Supply wstETH that bai!" -ForegroundColor Red; exit 1 }
+Write-Host "  [OK] Supplied $supplyWstDisplay wstETH" -ForegroundColor Green
 
-Write-Host "  [>] Enabling WETH as collateral..." -ForegroundColor Gray
-$result = Invoke-CastSend "$AAVE_POOL `"setUserUseReserveAsCollateral(address,bool)`" $WETH true --private-key $BORROWER_KEY"
-if ($null -eq $result) { Write-Host "  [!] setCollateral failed (co the da enable)" -ForegroundColor Yellow }
-Write-Host "  [OK] WETH enabled as collateral" -ForegroundColor Green
+$result = Invoke-CastSend "$AAVE_POOL `"setUserUseReserveAsCollateral(address,bool)`" $WSTETH true --private-key $BORROWER_KEY"
+if ($null -eq $result) {
+    Write-Host "  [!] setCollateral failed (co the da enable)" -ForegroundColor Yellow
+}
+Write-Host "  [OK] wstETH enabled as collateral" -ForegroundColor Green
 
 $accountData = Invoke-CastCall "$AAVE_POOL `"getUserAccountData(address)(uint256,uint256,uint256,uint256,uint256,uint256)`" $BORROWER"
-Write-Host "  [i] Account Data sau khi supply:" -ForegroundColor Gray
+Write-Host "  [i] Account Data sau supply:" -ForegroundColor Gray
 Write-AccountData $accountData
 
 # ============================================================================
-# STEP 4: Borrow USDC (gioi han boi pool liquidity)
+# STEP 2: Borrow USDC de day HF sat 1.0
 # ============================================================================
-Write-Step "4/8" "Borrow USDC (gioi han boi pool liquidity)"
+Write-Step "2/8" "Borrow USDC"
 
-# Re-check pool liquidity (co the da thay doi)
-$poolUsdcNowRaw = Invoke-CastCall "$USDC `"balanceOf(address)(uint256)`" $aUSDC"
-$poolUsdcNow = [decimal](Strip-CastAnnotation $poolUsdcNowRaw)
+$poolUsdcRaw = Invoke-CastCall "$USDC `"balanceOf(address)(uint256)`" $aUSDC"
+$poolUsdcNow = [decimal](Strip-CastAnnotation $poolUsdcRaw)
 
 $acctValues = Parse-CastValues $accountData
 if ($acctValues.Count -ge 3) {
-    $availableBorrowsBase = [decimal]$acctValues[2]  # 8-decimal USD
-    $maxBorrowUsdc = [math]::Floor($availableBorrowsBase / 100)  # -> 6-decimal USDC
-    
-    # Borrow = min(99% capacity, 90% pool liquidity)
+    $availableBorrowsBase = [decimal]$acctValues[2]
+    $maxBorrowUsdc = [math]::Floor($availableBorrowsBase / 100)
+
     $borrowFromCapacity = [math]::Floor($maxBorrowUsdc * 0.99)
     $borrowFromPool = [math]::Floor($poolUsdcNow * 0.90)
     $borrowAmount = [math]::Min($borrowFromCapacity, $borrowFromPool)
-    
+
     $borrowAmountUSD = [math]::Round([decimal]$borrowAmount / 1e6, 2)
-    $maxBorrowUSD = [math]::Round($maxBorrowUsdc / 1e6, 0)
-    Write-Host "  [i] Max borrow capacity: `$$maxBorrowUSD" -ForegroundColor Gray
-    Write-Host "  [i] Pool USDC available:  $([math]::Round($poolUsdcNow / 1e6, 2))" -ForegroundColor Gray
     Write-Host "  [>] Borrowing $borrowAmountUSD USDC..." -ForegroundColor Gray
 } else {
     $borrowAmount = [math]::Min(1000000000, [math]::Floor($poolUsdcNow * 0.90))
@@ -409,27 +378,25 @@ Write-Host "  [i] Account Data sau borrow:" -ForegroundColor Gray
 Write-AccountData $accountData
 
 # ============================================================================
-# STEP 4b: Vay them de day HF sat 1.0
+# STEP 3: Vay them de day HF sat 1.0
 # ============================================================================
-Write-Step "4b/8" "Vay them USDC de day HF sat 1.0"
+Write-Step "3/8" "Vay them USDC de day HF sat 1.0"
 
 $totalBorrowedUSD = $borrowAmountUSD
 for ($i = 1; $i -le 5; $i++) {
-    # Re-check pool liquidity
     $poolUsdcCheck = Invoke-CastCall "$USDC `"balanceOf(address)(uint256)`" $aUSDC"
     $poolUsdcCheckVal = [decimal](Strip-CastAnnotation $poolUsdcCheck)
 
     $acctValues2 = Parse-CastValues $accountData
     if ($acctValues2.Count -lt 6) { break }
 
-    $availLeft = [decimal]$acctValues2[2]  # availableBorrowsBase (8-decimal)
+    $availLeft = [decimal]$acctValues2[2]
     $availLeftUsdc = [math]::Floor($availLeft / 100)
 
-    # Cap boi pool liquidity
     $poolCap = [math]::Floor($poolUsdcCheckVal * 0.90)
     $extraBorrow = [math]::Min([math]::Floor($availLeftUsdc * 0.99), $poolCap)
 
-    if ($extraBorrow -lt 100000) {  # < 0.10 USDC
+    if ($extraBorrow -lt 100000) {
         Write-Host "  [i] Khong con du de vay them, dung." -ForegroundColor Gray
         break
     }
@@ -465,24 +432,19 @@ Write-AccountData $accountData
 $finalHF = Get-HealthFactor $accountData
 
 # ============================================================================
-# STEP 4c: Rut bot collateral de day HF xuong sat 1.0
+# STEP 4: Rut bot collateral de day HF xuong sat 1.0
 # ============================================================================
 if ($finalHF -gt 1.10) {
-    Write-Step "4c/8" "Rut bot collateral de day HF xuong ~1.03"
-
-    # HF = (totalCollateral * liqThreshold) / totalDebt
-    # targetCollateral = targetHF * totalDebt / liqThreshold
-    # withdrawAmount = currentCollateral - targetCollateral (in base 8-decimal USD)
-    # Convert to WETH: withdrawWeth = withdrawUSD / ethPrice
+    Write-Step "4/8" "Rut bot wstETH collateral de day HF xuong ~1.03"
 
     $targetHF = 1.03
     for ($w = 1; $w -le 8; $w++) {
         $wValues = Parse-CastValues $accountData
         if ($wValues.Count -lt 6) { break }
 
-        $curCollateral8 = [decimal]$wValues[0]   # 8-decimal USD
-        $curDebt8 = [decimal]$wValues[1]          # 8-decimal USD
-        $curLiqThreshold = [decimal]$wValues[3]   # basis points (e.g., 8445 = 84.45%)
+        $curCollateral8 = [decimal]$wValues[0]
+        $curDebt8 = [decimal]$wValues[1]
+        $curLiqThreshold = [decimal]$wValues[3]
 
         if ($curDebt8 -lt 1e6) {
             Write-Host "  [!] Debt qua nho, khong can rut collateral." -ForegroundColor Yellow
@@ -495,36 +457,31 @@ if ($finalHF -gt 1.10) {
             break
         }
 
-        # targetCollateral = targetHF * debt / (liqThreshold / 10000)
         $liqRatio = $curLiqThreshold / 10000
         $targetCollateral8 = $targetHF * $curDebt8 / $liqRatio
         $withdrawAmount8 = $curCollateral8 - $targetCollateral8
 
-        if ($withdrawAmount8 -lt 1e6) {  # < $0.01
+        if ($withdrawAmount8 -lt 1e6) {
             Write-Host "  [i] Khong can rut them." -ForegroundColor Gray
             break
         }
 
-        # Convert USD to WETH (18-decimal)
-        # withdrawWeth = withdrawUSD_8decimal / ethPrice_8decimal * 1e18
-        $ethPriceNow = Invoke-CastCall "$AAVE_ORACLE `"getAssetPrice(address)(uint256)`" $WETH"
-        $ethPriceNowVal = [decimal](Strip-CastAnnotation $ethPriceNow)
-        $withdrawWethWei = [math]::Floor($withdrawAmount8 / $ethPriceNowVal * 1e18)
+        $wstPriceNow = Invoke-CastCall "$AAVE_ORACLE `"getAssetPrice(address)(uint256)`" $WSTETH"
+        $wstPriceNowVal = [decimal](Strip-CastAnnotation $wstPriceNow)
+        $withdrawWstWei = [math]::Floor($withdrawAmount8 / $wstPriceNowVal * 1e18)
+        $withdrawWstWei = [math]::Floor($withdrawWstWei * 0.95)
 
-        # Safety: withdraw 95% of calculated amount to avoid revert
-        $withdrawWethWei = [math]::Floor($withdrawWethWei * 0.95)
-
-        if ($withdrawWethWei -lt 1e14) {  # < 0.0001 WETH
+        if ($withdrawWstWei -lt 1e14) {
             Write-Host "  [i] Withdraw amount qua nho, dung." -ForegroundColor Gray
             break
         }
 
-        $withdrawWethETH = [math]::Round([decimal]$withdrawWethWei / 1e18, 6)
+        $withdrawWstDisplay = [math]::Round([decimal]$withdrawWstWei / 1e18, 6)
         $withdrawUSD = [math]::Round($withdrawAmount8 / 1e8 * 0.95, 2)
-        Write-Host "  [>] Rut #$w : $withdrawWethETH WETH (~`$$withdrawUSD) ..." -ForegroundColor Gray
+        Write-Host "  [>] Rut #$w : $withdrawWstDisplay wstETH (~`$$withdrawUSD) ..." -ForegroundColor Gray
 
-        $withdrawStr = [math]::Floor($withdrawWethWei).ToString("0")
-        $result = Invoke-CastSend "$AAVE_POOL `"withdraw(address,uint256,address)`" $WETH $withdrawStr $BORROWER --private-key $BORROWER_KEY"
+        $withdrawStr = [math]::Floor($withdrawWstWei).ToString("0")
+        $result = Invoke-CastSend "$AAVE_POOL `"withdraw(address,uint256,address)`" $WSTETH $withdrawStr $BORROWER --private-key $BORROWER_KEY"
         if ($null -eq $result) {
             Write-Host "  [!] Withdraw that bai (HF qua sat 1.0), dung." -ForegroundColor Yellow
             break
@@ -541,86 +498,36 @@ if ($finalHF -gt 1.10) {
     $finalHF = Get-HealthFactor $accountData
 }
 
-if ($finalHF -gt 1.20) {
-    $neededDrop = [math]::Round((1 - 1.0 / $finalHF) * 100, 0)
-    Write-Host ""
-    Write-Host "  [!] HF = $finalHF van cao." -ForegroundColor Yellow
-    Write-Host "  [!] Can crash gia ~${neededDrop}% de HF < 1.0" -ForegroundColor Yellow
-} else {
-    $neededDrop = [math]::Round((1 - 1.0 / $finalHF) * 100, 0)
-    Write-Host ""
-    Write-Host "  [OK] HF = $finalHF - chi can crash ~${neededDrop}% la liquidatable!" -ForegroundColor Green
-}
-
 # ============================================================================
-# STEP 5: Chuan bi Liquidator wallet
+# STEP 5: Fund liquidator USDC
 # ============================================================================
-Write-Step "5/8" "Setup Liquidator Wallet"
+Write-Step "5/8" "Fund liquidator USDC"
 
-# Set USDC balance qua storage manipulation (slot khac nhau tuy network)
-Write-Host "  [>] Setting USDC balance (storage slot $USDC_BALANCE_SLOT)..." -ForegroundColor Gray
+Write-Host "  [>] Setting USDC balance (slot $USDC_BALANCE_SLOT)..." -ForegroundColor Gray
 $balanceSlot = Invoke-Expression "cast index address $LIQUIDATOR $USDC_BALANCE_SLOT" 2>&1
 $balanceSlot = ($balanceSlot | Out-String).Trim()
-# 500,000 USDC = 500000 * 10^6 = 500000000000 = 0x746A528800
 $usdcHex = "0x" + "746A528800".PadLeft(64, '0')
 $null = Invoke-CastRpc "hardhat_setStorageAt $USDC $balanceSlot $usdcHex"
 
-# Verify
 $liquidatorUSDC_raw = Invoke-CastCall "$USDC `"balanceOf(address)(uint256)`" $LIQUIDATOR"
-$liquidatorUSDC_clean = Strip-CastAnnotation $liquidatorUSDC_raw
-$liquidatorUSDC_val = [math]::Round([decimal]$liquidatorUSDC_clean / 1e6, 2)
+$liquidatorUSDC_val = [math]::Round([decimal](Strip-CastAnnotation $liquidatorUSDC_raw) / 1e6, 2)
 
 if ($liquidatorUSDC_val -gt 0) {
     Write-Host "  [OK] Liquidator USDC: $liquidatorUSDC_val" -ForegroundColor Green
 } else {
     Write-Host "  [X] Storage slot $USDC_BALANCE_SLOT incorrect!" -ForegroundColor Red
-    Write-Host "  [>] Fallback: impersonate aUSDC de transfer..." -ForegroundColor Yellow
-    
-    # Impersonate aUSDC contract (holds pool's USDC) and transfer
-    Invoke-CastRpc "hardhat_impersonateAccount $aUSDC"
-    # Give aUSDC some ETH for gas
-    Invoke-CastRpc "hardhat_setBalance $aUSDC 0x56BC75E2D63100000"
-    $transferAmt = [math]::Min($poolUsdcAmount * 0.5, 500000000000).ToString("0")  # min(50% pool, 500k USDC)
-    $result = Invoke-CastSend "$USDC `"transfer(address,uint256)`" $LIQUIDATOR $transferAmt --from $aUSDC"
-    Invoke-CastRpc "hardhat_stopImpersonatingAccount $aUSDC"
-    
-    $liquidatorUSDC_raw = Invoke-CastCall "$USDC `"balanceOf(address)(uint256)`" $LIQUIDATOR"
-    $liquidatorUSDC_clean = Strip-CastAnnotation $liquidatorUSDC_raw
-    $liquidatorUSDC_val = [math]::Round([decimal]$liquidatorUSDC_clean / 1e6, 2)
-    if ($liquidatorUSDC_val -gt 0) {
-        Write-Host "  [OK] Liquidator USDC (impersonate): $liquidatorUSDC_val" -ForegroundColor Green
-    } else {
-        Write-Host "  [X] Khong set duoc USDC cho Liquidator!" -ForegroundColor Red
-    }
+    exit 1
 }
 
-# Approve USDC cho Aave Pool
 $result = Invoke-CastSend "$USDC `"approve(address,uint256)`" $AAVE_POOL $maxApproval --private-key $LIQUIDATOR_KEY"
 if ($null -ne $result) {
     Write-Host "  [OK] Liquidator approved USDC" -ForegroundColor Green
 }
 
 # ============================================================================
-# STEP 6: Kiem tra trang thai cuoi cung
+# STEP 6: Snapshot
 # ============================================================================
-Write-Step "6/8" "Kiem tra trang thai cuoi cung"
-
-$ethPriceChainlink = Invoke-CastCall "$ETH_USD_FEED `"latestAnswer()(int256)`""
-$ethPriceChainlinkClean = Strip-CastAnnotation $ethPriceChainlink
-$ethPriceChainlinkUSD = [math]::Round([decimal]$ethPriceChainlinkClean / 1e8, 2)
-Write-Host "  [`$] ETH/USD (Chainlink): `$$ethPriceChainlinkUSD" -ForegroundColor Green
-
-$accountData = Invoke-CastCall "$AAVE_POOL `"getUserAccountData(address)(uint256,uint256,uint256,uint256,uint256,uint256)`" $BORROWER"
-Write-Host "  [i] Borrower Account:" -ForegroundColor Gray
-Write-AccountData $accountData
-
-Write-Host ""
-Write-Host "  [OK] Scenario san sang!" -ForegroundColor Green
-
-# ============================================================================
-# STEP 7: Tao snapshot
-# ============================================================================
-Write-Step "7/8" "Tao Snapshot"
+Write-Step "6/8" "Tao snapshot"
 
 $snapshotId = Invoke-CastRpc "evm_snapshot"
 if ([string]::IsNullOrWhiteSpace($snapshotId) -or $snapshotId -match '^Error') {
@@ -631,29 +538,27 @@ if ([string]::IsNullOrWhiteSpace($snapshotId) -or $snapshotId -match '^Error') {
 }
 
 # ============================================================================
-# SUMMARY
+# STEP 7: Summary
 # ============================================================================
+Write-Step "7/8" "Summary"
+
+$neededDrop = [math]::Round((1 - 1.0 / $finalHF) * 100, 0)
+if ($neededDrop -lt 1) { $neededDrop = 1 }
+
 Write-Host ""
 Write-Host "============================================" -ForegroundColor Green
-Write-Host "  SCENARIO SETUP COMPLETE" -ForegroundColor Green
+Write-Host "  WSTETH-COLLATERAL SCENARIO READY" -ForegroundColor Green
 Write-Host "============================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "  [i] Tom tat:" -ForegroundColor Cyan
-Write-Host "     Borrower:   $BORROWER" -ForegroundColor Gray
-Write-Host "     Collateral: $supplyWethETH WETH" -ForegroundColor Gray
-Write-Host "     Debt:       ~`$$borrowAmountUSD USDC" -ForegroundColor Gray
-Write-Host "     ETH/USD:    `$$ethPriceChainlinkUSD" -ForegroundColor Gray
-Write-Host "     HF:         $finalHF" -ForegroundColor Gray
+Write-Host "  [i] Borrower:   $BORROWER" -ForegroundColor Gray
+Write-Host "  [i] Collateral: ~$supplyWstDisplay wstETH" -ForegroundColor Gray
+Write-Host "  [i] Debt:       ~`$$borrowAmountUSD USDC" -ForegroundColor Gray
+Write-Host "  [i] HF:         $finalHF" -ForegroundColor Gray
 Write-Host ""
-Write-Host "     Liquidator: $LIQUIDATOR" -ForegroundColor Gray
-Write-Host "     USDC:       $liquidatorUSDC_val" -ForegroundColor Gray
+Write-Host "  [i] Liquidator: $LIQUIDATOR" -ForegroundColor Gray
+Write-Host "  [i] USDC:       $liquidatorUSDC_val" -ForegroundColor Gray
 Write-Host ""
 Write-Host "  --> Buoc tiep theo:" -ForegroundColor Yellow
-if ($finalHF -gt 1.20) {
-    $suggestedDrop = [math]::Min([int]$neededDrop + 5, 95)
-    Write-Host "     1. .\scripts\single-user\crash_price.ps1 -PriceDrop $suggestedDrop  - Crash ${suggestedDrop}%" -ForegroundColor Yellow
-} else {
-    Write-Host "     1. .\scripts\single-user\crash_price.ps1              - Crash gia ETH" -ForegroundColor Yellow
-}
-Write-Host "     2. cargo test executor                   - Integration test" -ForegroundColor Yellow
-Write-Host "     3. cargo run                             - Chay bot" -ForegroundColor Yellow
+Write-Host "     1. .\scripts\single-user\crash_price_wstETH.ps1 -PriceDrop $neededDrop" -ForegroundColor Yellow
+Write-Host "     2. cargo test executor -- --nocapture" -ForegroundColor Yellow
+Write-Host "     3. cargo run" -ForegroundColor Yellow

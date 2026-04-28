@@ -13,13 +13,11 @@
 #
 # Cach dung:
 #   .\scripts\single-user\crash_price.ps1 [-PriceDrop 30]  # Drop 30%
-#   .\scripts\single-user\crash_price.ps1 -Network sepolia -PriceDrop 25
+#   .\scripts\single-user\crash_price.ps1 -PriceDrop 25
 # ============================================================================
 
 param(
     [string]$RpcUrl = "http://127.0.0.1:8545",
-    [ValidateSet("auto", "mainnet", "sepolia")]
-    [string]$Network = "auto",
     [int]$PriceDrop = 25,  # % price drop, default 25%
     [switch]$SeedAaveEvent  # Optional: emit an extra Aave event after crash
 )
@@ -40,17 +38,6 @@ $MAINNET_CONFIG = @{
     NetworkName             = "Ethereum Mainnet"
 }
 
-# Sepolia addresses (Chain ID: 11155111)
-$SEPOLIA_CONFIG = @{
-    AAVE_POOL               = "0x6Ae43d3271ff6888e7Fc43Fd7321a503ff738951"
-    AAVE_ORACLE             = "0x2da88497588bf89281816106C7259e31AF45a663"
-    POOL_ADDRESSES_PROVIDER = "0x012bAC54348C0E635dCAc9D5FB99f06F24136C9A"
-    ACL_MANAGER             = "0x7F2bE3b178deeFF716CD6Ff03Ef79A1dFf360ddD"
-    WETH                    = "0xC558DBdd856501FCd9aaF1E62eae57A9F0629a3c"
-    USDC                    = "0x94a9D9AC8a22534E3FaCa9F4e7F2E2cf85d5E4C8"
-    ETH_USD_FEED            = "0x694AA1769357215DE4FAC081bf1f309aDC325306"
-    NetworkName             = "Sepolia Testnet"
-}
 
 # Hardhat accounts (Account #2 = Borrower, Account #0 = Deployer for gas)
 $BORROWER      = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
@@ -219,27 +206,7 @@ if ([string]::IsNullOrEmpty($chainId) -or $chainId -match "error") {
     exit 1
 }
 
-# Auto-detect or validate network
-if ($Network -eq "auto") {
-    if ($chainId -eq "1") {
-        $Network = "mainnet"
-    } elseif ($chainId -eq "11155111") {
-        $Network = "sepolia"
-    } elseif ($chainId -eq "31337") {
-        $Network = "mainnet"
-        Write-Host "  [i] Detected local fork chain (31337) - using mainnet addresses" -ForegroundColor DarkGray
-    } else {
-        Write-Host "  [!] Unknown chain ID: $chainId - defaulting to mainnet config" -ForegroundColor Yellow
-        $Network = "mainnet"
-    }
-}
-
-# Load network config
-if ($Network -eq "sepolia") {
-    $CONFIG = $SEPOLIA_CONFIG
-} else {
-    $CONFIG = $MAINNET_CONFIG
-}
+$CONFIG = $MAINNET_CONFIG
 
 # Set variables from config
 $AAVE_POOL              = $CONFIG.AAVE_POOL

@@ -148,6 +148,17 @@ impl OracleConfig {
                 deviation_threshold_pct: 1.0,
                 is_stablecoin: false,
             },
+            PriceFeedConfig {
+                asset_symbol: "WSTETH".to_string(),
+                asset_id: "WSTETH".to_string(),
+                // Aave Oracle source for wstETH (mainnet)
+                feed_address: "0xe1D97bF61901B075E9626c8A2340a7De385861Ef"
+                    .parse().unwrap(),
+                decimals: 8,
+                heartbeat_secs: 3600,
+                deviation_threshold_pct: 0.5,
+                is_stablecoin: false,
+            },
         ];
 
         Self {

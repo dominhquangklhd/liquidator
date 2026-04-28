@@ -12,15 +12,12 @@
 #
 # Cach dung:
 #   .\scripts\multi-users\setup_multi_liquidation.ps1                     # 10 borrowers, mainnet fork
-#   .\scripts\multi-users\setup_multi_liquidation.ps1 -Network sepolia
 #   .\scripts\multi-users\setup_multi_liquidation.ps1 -SupplyEthPerUser 5 # 5 WETH moi user
 #   .\scripts\multi-users\setup_multi_liquidation.ps1 -BorrowRatio 0.95   # Vay 95% capacity
 # ============================================================================
 
 param(
     [string]$RpcUrl = "http://127.0.0.1:8545",
-    [ValidateSet("auto", "mainnet", "sepolia")]
-    [string]$Network = "auto",
     [decimal]$SupplyEthPerUser = 0,   # 0 = tu dong tinh (chia pool USDC cho so luong user)
     [decimal]$BorrowRatio = 0.92,     # 92% borrowing capacity per user (de HF ~ 1.04)
     [int]$TargetHF_Pct = 103          # Target HF * 100 (103 = HF ~ 1.03)
@@ -46,19 +43,6 @@ $MAINNET_CONFIG = @{
     NetworkName             = "Ethereum Mainnet"
 }
 
-$SEPOLIA_CONFIG = @{
-    AAVE_POOL               = "0x6Ae43d3271ff6888e7Fc43Fd7321a503ff738951"
-    AAVE_ORACLE             = "0x2da88497588bf89281816106C7259e31AF45a663"
-    POOL_ADDRESSES_PROVIDER = "0x012bAC54348C0E635dCAc9D5FB99f06F24136C9A"
-    ACL_MANAGER             = "0x7F2bE3b178deeFF716CD6Ff03Ef79A1dFf360ddD"
-    WETH                    = "0xC558DBdd856501FCd9aaF1E62eae57A9F0629a3c"
-    USDC                    = "0x94a9D9AC8a22534E3FaCa9F4e7F2E2cf85d5E4C8"
-    aWETH                   = "0x5b071b590a59395fE4025A0Ccc1FcC931AAc1830"
-    aUSDC                   = "0x16da4541aD1807f4443d92D26044C1147406EB80"
-    ETH_USD_FEED            = "0x694AA1769357215DE4FAC081bf1f309aDC325306"
-    USDC_BALANCE_SLOT       = 0
-    NetworkName             = "Sepolia Testnet"
-}
 
 # ============================================================================
 # HARDHAT ACCOUNTS - 10 BORROWERS (Account #2 den #11)
@@ -247,16 +231,7 @@ if ($LASTEXITCODE -eq 0 -and $clientVersion -match "hardhat") {
     Write-Host "[i] RPC client: Hardhat" -ForegroundColor DarkGray
 }
 
-if ($Network -eq "auto") {
-    switch ($chainId) {
-        "1"        { $Network = "mainnet" }
-        "11155111" { $Network = "sepolia" }
-        "31337"    { $Network = "mainnet"; Write-Host "[i] Local fork (31337) -> mainnet config" -ForegroundColor DarkGray }
-        default    { $Network = "mainnet"; Write-Host "[!] Unknown chain $chainId -> mainnet" -ForegroundColor Yellow }
-    }
-}
-
-$CONFIG = if ($Network -eq "sepolia") { $SEPOLIA_CONFIG } else { $MAINNET_CONFIG }
+$CONFIG = $MAINNET_CONFIG
 
 $AAVE_POOL         = $CONFIG.AAVE_POOL
 $AAVE_ORACLE       = $CONFIG.AAVE_ORACLE

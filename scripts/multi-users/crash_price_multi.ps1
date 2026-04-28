@@ -16,14 +16,11 @@
 # Cach dung:
 #   .\scripts\multi_users\crash_price_multi.ps1                  # Tu dong tinh PriceDrop
 #   .\scripts\multi_users\crash_price_multi.ps1 -PriceDrop 30    # Drop 30% co dinh
-#   .\scripts\multi_users\crash_price_multi.ps1 -Network sepolia
 #   .\scripts\multi_users\crash_price_multi.ps1 -SeedAaveEvent   # Emit them event cho bot
 # ============================================================================
 
 param(
     [string]$RpcUrl = "http://127.0.0.1:8545",
-    [ValidateSet("auto", "mainnet", "sepolia")]
-    [string]$Network = "auto",
     [int]$PriceDrop = 0,      # 0 = tu dong tinh du dua vao HF thap nhat
     [int]$PriceDropBuffer = 8, # Them % buffer de chac chan HF < 1.0
     [switch]$SeedAaveEvent    # Optional: emit extra Aave event sau crash
@@ -44,16 +41,6 @@ $MAINNET_CONFIG = @{
     NetworkName             = "Ethereum Mainnet"
 }
 
-$SEPOLIA_CONFIG = @{
-    AAVE_POOL               = "0x6Ae43d3271ff6888e7Fc43Fd7321a503ff738951"
-    AAVE_ORACLE             = "0x2da88497588bf89281816106C7259e31AF45a663"
-    POOL_ADDRESSES_PROVIDER = "0x012bAC54348C0E635dCAc9D5FB99f06F24136C9A"
-    ACL_MANAGER             = "0x7F2bE3b178deeFF716CD6Ff03Ef79A1dFf360ddD"
-    WETH                    = "0xC558DBdd856501FCd9aaF1E62eae57A9F0629a3c"
-    USDC                    = "0x94a9D9AC8a22534E3FaCa9F4e7F2E2cf85d5E4C8"
-    ETH_USD_FEED            = "0x694AA1769357215DE4FAC081bf1f309aDC325306"
-    NetworkName             = "Sepolia Testnet"
-}
 
 # ============================================================================
 # 10 BORROWERS (phai khop voi setup_multi_liquidation.ps1)
@@ -178,16 +165,7 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "[X] Khong ket noi RPC: $RpcUrl" -ForegroundColor Red; exit 1
 }
 
-if ($Network -eq "auto") {
-    switch ($chainId) {
-        "1"        { $Network = "mainnet" }
-        "11155111" { $Network = "sepolia" }
-        "31337"    { $Network = "mainnet" }
-        default    { $Network = "mainnet" }
-    }
-}
-
-$CONFIG = if ($Network -eq "sepolia") { $SEPOLIA_CONFIG } else { $MAINNET_CONFIG }
+$CONFIG = $MAINNET_CONFIG
 $AAVE_POOL   = $CONFIG.AAVE_POOL
 $AAVE_ORACLE = $CONFIG.AAVE_ORACLE
 $WETH        = $CONFIG.WETH

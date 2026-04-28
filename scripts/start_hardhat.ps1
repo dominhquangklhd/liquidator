@@ -7,15 +7,12 @@
 #
 # Cach dung:
 #   .\scripts\start_hardhat.ps1
-#   .\scripts\start_hardhat.ps1 -Network sepolia
 #   .\scripts\start_hardhat.ps1 -RpcUrl "YOUR_CUSTOM_URL"
 #   .\scripts\start_hardhat.ps1 -ForkBlock 24700000
 # ============================================================================
 
 param(
     [string]$RpcUrl = "",
-    [ValidateSet("mainnet", "sepolia")]
-    [string]$Network = "mainnet",
     [int]$ForkBlock = 0,
     [int]$Port = 8545,
     [string]$ForkProjectPath = "fork-blockchain"
@@ -27,18 +24,13 @@ if (-not (Get-Command "npm" -ErrorAction SilentlyContinue)) {
 }
 
 if ([string]::IsNullOrEmpty($RpcUrl)) {
-    if ($Network -eq "sepolia") {
-        $RpcUrl = $env:SEPOLIA_RPC_URL
-        $networkName = "Sepolia Testnet"
-    } else {
-        $RpcUrl = $env:ETH_RPC_URL
-        $networkName = "Ethereum Mainnet"
-    }
+    $RpcUrl = $env:ETH_RPC_URL
+    $networkName = "Ethereum Mainnet"
 }
 
 if ([string]::IsNullOrEmpty($RpcUrl)) {
     Write-Host "[!] Khong co RPC URL!" -ForegroundColor Yellow
-    Write-Host "Dat ETH_RPC_URL hoac SEPOLIA_RPC_URL trong env/.env" -ForegroundColor Yellow
+    Write-Host "Dat ETH_RPC_URL trong env/.env" -ForegroundColor Yellow
     exit 1
 }
 
