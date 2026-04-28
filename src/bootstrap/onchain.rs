@@ -40,6 +40,13 @@ abigen!(
     ]"#
 );
 
+abigen!(
+    BootstrapAddressesProvider,
+    r#"[
+        function getPoolDataProvider() external view returns (address)
+    ]"#
+);
+
 pub async fn bootstrap_onchain_state(
     engine: &mut RiskEngine,
     storage: Arc<HybridStorage>,
@@ -47,7 +54,7 @@ pub async fn bootstrap_onchain_state(
     chain_id: u64,
     aave_pool_address: H160,
     aave_oracle_address: H160,
-    aave_data_provider_address: H160,
+    aave_addresses_provider: H160,
     risk_config: &RiskEngineConfig,
 ) -> Result<()> {
     // Prefer Aave subgraph top users (HF <= 2), then fallback to DB/env.
@@ -170,29 +177,61 @@ pub async fn bootstrap_onchain_state(
         assets_loaded += 1;
     }
 
+    // ── Resolve ProtocolDataProvider address from PoolAddressesProvider ──
+    let addresses_provider = BootstrapAddressesProvider::new(
+        aave_addresses_provider,
+        Arc::clone(&rpc),
+    );
+    let data_provider_address = match addresses_provider.get_pool_data_provider().call().await {
+        Ok(addr) => {
+            tracing::info!("Resolved ProtocolDataProvider: {:?}", addr);
+            addr
+        }
+        Err(e) => {
+            tracing::error!("Failed to resolve ProtocolDataProvider: {:?}", e);
+            H160::zero()
+        }
+    };
+
     // ── Initialize AaveV3Reader for real per-reserve position reads ──
-    // Build reverse map: reserve address -> symbol (used by reader)
     let reverse_reserve_map: HashMap<Address, String> = reserve_catalog
         .iter()
         .map(|(sym, addr)| (*addr, sym.clone()))
         .collect();
 
+    let reader_available;
     let mut aave_reader = AaveV3Reader::new(
         aave_pool_address,
-        aave_data_provider_address,
+        data_provider_address,
         Arc::clone(&rpc),
     );
 
-    if let Err(e) = aave_reader.init_reserves(&reverse_reserve_map).await {
-        tracing::warn!("AaveV3Reader init_reserves failed, falling back to heuristic: {:?}", e);
+    if data_provider_address == H160::zero() {
+        tracing::warn!("ProtocolDataProvider address is zero, reader disabled");
+        reader_available = false;
+    } else if let Err(e) = aave_reader.init_reserves(&reverse_reserve_map).await {
+        tracing::warn!("AaveV3Reader init_reserves failed: {:?}", e);
+        reader_available = false;
     } else {
         tracing::info!(
             "AaveV3Reader initialized with {} on-chain reserves",
             aave_reader.reserves().len()
         );
-    }
+        reader_available = true;
 
-    let reader_available = !aave_reader.reserves().is_empty();
+        // Overwrite hardcoded LTV/LT with real on-chain values from ProtocolDataProvider
+        for reserve in aave_reader.reserves() {
+            if let Some(mut asset) = engine.assets.get_mut(&reserve.symbol) {
+                asset.ltv = reserve.ltv;
+                asset.liquidation_threshold = reserve.liquidation_threshold;
+                asset.decimals = reserve.decimals;
+                tracing::info!(
+                    "Asset {} updated from on-chain: ltv={:.4}, lt={:.4}, decimals={}",
+                    reserve.symbol, reserve.ltv, reserve.liquidation_threshold, reserve.decimals
+                );
+            }
+        }
+    }
 
     let pool = BootstrapAavePool::new(aave_pool_address, Arc::clone(&rpc));
     let mut candidates: Vec<(String, User, LiquidationTarget)> = Vec::new();

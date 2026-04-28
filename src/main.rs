@@ -173,12 +173,12 @@ async fn main() {
     .parse()
     .expect("Invalid Aave oracle address");
 
-    let aave_data_provider_address = env_string(
-        "AAVE_DATA_PROVIDER_ADDRESS",
-        "0x7B4EB56E7CD4b454BA8ff71E4518426c3f71b3d6",
+    let aave_addresses_provider = env_string(
+        "AAVE_ADDRESSES_PROVIDER",
+        "0x2f39d218133AFaB8F2B819B1066c7E434Ad94E9e",
     )
     .parse()
-    .expect("Invalid Aave data provider address");
+    .expect("Invalid Aave PoolAddressesProvider address");
 
     if let Err(e) = bootstrap_onchain_state(
         &mut engine,
@@ -187,7 +187,7 @@ async fn main() {
         provider.chain_id(),
         aave_pool_address,
         aave_oracle_address,
-        aave_data_provider_address,
+        aave_addresses_provider,
         &risk_config,
     )
     .await

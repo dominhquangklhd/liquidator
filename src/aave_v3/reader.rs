@@ -23,6 +23,7 @@ abigen!(
     r#"[
         function getReserveTokensAddresses(address asset) external view returns (address aTokenAddress, address stableDebtTokenAddress, address variableDebtTokenAddress)
         function getUserReserveData(address asset, address user) external view returns (uint256 currentATokenBalance, uint256 currentStableDebt, uint256 currentVariableDebt, uint256 principalStableDebt, uint256 scaledVariableDebt, uint256 stableBorrowRate, uint256 liquidityRate, uint40 stableRateLastUpdated, bool usageAsCollateralEnabled)
+        function getReserveConfigurationData(address asset) external view returns (uint256 decimals, uint256 ltv, uint256 liquidationThreshold, uint256 liquidationBonus, uint256 reserveFactor, bool usageAsCollateralEnabled, bool borrowingEnabled, bool stableBorrowRateEnabled, bool isActive, bool isFrozen)
     ]"#
 );
 
@@ -35,6 +36,8 @@ pub struct ReserveInfo {
     pub asset: Address,
     pub symbol: String,
     pub decimals: u8,
+    pub ltv: f64,
+    pub liquidation_threshold: f64,
     pub a_token: Address,
     pub stable_debt_token: Address,
     pub variable_debt_token: Address,
@@ -97,13 +100,13 @@ impl<M: Middleware + 'static> AaveV3Reader<M> {
     /// INIT RESERVE CACHE
     /// =============================
     ///
-    /// Fetches all reserves from the Pool, resolves their token addresses via
-    /// ProtocolDataProvider, and populates the internal cache.
+    /// Fetches all reserves from the Pool, then only caches reserves whose
+    /// address appears in `known_symbols`.  Unsupported reserves are skipped
+    /// entirely — this avoids expensive per-user RPC calls for tokens the
+    /// system cannot price anyway.
     ///
-    /// `known_symbols` maps reserve **address** → human-readable symbol so the
-    /// reader can convert raw addresses into symbols used by the rest of the bot
-    /// (e.g. "WETH", "USDC"). Any reserve whose address is missing from the map
-    /// will be stored with a hex-address fallback symbol.
+    /// `known_symbols` maps reserve **address** → human-readable symbol
+    /// (e.g. "WETH", "USDC").
     pub async fn init_reserves(
         &mut self,
         known_symbols: &HashMap<Address, String>,
@@ -115,10 +118,18 @@ impl<M: Middleware + 'static> AaveV3Reader<M> {
             .await
             .context("Pool.getReservesList() failed")?;
 
-        let mut reserves = Vec::with_capacity(reserve_list.len());
-        let mut addr_map = HashMap::with_capacity(reserve_list.len());
+        let total_onchain = reserve_list.len();
+        let mut reserves = Vec::with_capacity(known_symbols.len());
+        let mut addr_map = HashMap::with_capacity(known_symbols.len());
+        let mut skipped = 0usize;
 
         for asset in reserve_list {
+            // Only cache reserves that the system supports
+            let Some(symbol) = known_symbols.get(&asset).cloned() else {
+                skipped += 1;
+                continue;
+            };
+
             let tokens = self
                 .data_provider
                 .get_reserve_tokens_addresses(asset)
@@ -126,12 +137,22 @@ impl<M: Middleware + 'static> AaveV3Reader<M> {
                 .await
                 .context("ProtocolDataProvider.getReserveTokensAddresses() failed")?;
 
-            let symbol = known_symbols
-                .get(&asset)
-                .cloned()
-                .unwrap_or_else(|| format!("{:?}", asset));
+            // Read on-chain reserve configuration for accurate LTV & LT
+            let config = self
+                .data_provider
+                .get_reserve_configuration_data(asset)
+                .call()
+                .await
+                .context("ProtocolDataProvider.getReserveConfigurationData() failed")?;
 
-            let decimals = symbol_to_decimals(&symbol);
+            let decimals = config.0.as_u32() as u8;
+            let ltv = u256_to_f64(config.1) / 10_000.0;                // basis points -> ratio
+            let liquidation_threshold = u256_to_f64(config.2) / 10_000.0; // basis points -> ratio
+
+            tracing::debug!(
+                "Reserve {}: decimals={}, ltv={:.4}, lt={:.4}",
+                symbol, decimals, ltv, liquidation_threshold
+            );
 
             addr_map.insert(asset, symbol.clone());
 
@@ -139,6 +160,8 @@ impl<M: Middleware + 'static> AaveV3Reader<M> {
                 asset,
                 symbol,
                 decimals,
+                ltv,
+                liquidation_threshold,
                 a_token: tokens.0,
                 stable_debt_token: tokens.1,
                 variable_debt_token: tokens.2,
@@ -146,8 +169,10 @@ impl<M: Middleware + 'static> AaveV3Reader<M> {
         }
 
         tracing::info!(
-            "AaveV3Reader: initialized {} reserves from on-chain",
-            reserves.len()
+            "AaveV3Reader: initialized {} supported reserves ({} skipped, {} on-chain total)",
+            reserves.len(),
+            skipped,
+            total_onchain,
         );
 
         self.reserves = reserves;
