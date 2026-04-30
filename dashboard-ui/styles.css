@@ -145,9 +145,44 @@ button {
 }
 
 .chart-canvas-wrap canvas {
-  width: 100% !important;
-  height: 100% !important;
-  display: block;
+  /* Let Chart.js handle the canvas size */
+}
+
+.table-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.pagination-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.pagination-controls select {
+  padding: 4px 8px;
+  font-size: 13px;
+}
+
+.pagination-controls button {
+  padding: 4px 10px;
+  font-size: 13px;
+  background: var(--bg-secondary);
+  color: var(--text);
+  border: 1px solid var(--line);
+}
+
+.pagination-controls button:hover {
+  background: var(--line);
+}
+
+.pagination-controls button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .card-title {

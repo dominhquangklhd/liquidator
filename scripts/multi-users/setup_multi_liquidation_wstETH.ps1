@@ -355,7 +355,9 @@ for ($i = 0; $i -lt $BORROWERS.Count; $i++) {
     $ethBalStr = ($ethBalRaw | Out-String).Trim()
     $ethBal = try { [decimal]$ethBalStr / 1e18 } catch { 0 }
     if ($ethBal -lt 1) {
-        $ethHex = "0x" + [Convert]::ToString([long]1000e18, 16)
+        # Dung BigInteger de tranh overflow: [long] chi chua toi ~9.2e18, con 1000 ETH = 1e21
+        $ethWei = [System.Numerics.BigInteger]::Parse("1000000000000000000000")  # 1000 ETH in wei
+        $ethHex = "0x" + $ethWei.ToString("x").TrimStart('0')
         $null = Invoke-CastRpc "hardhat_setBalance $addr $ethHex"
         Write-Host "    [i] ETH balance set: 1000 ETH (cho gas)" -ForegroundColor DarkGray
     }
@@ -488,8 +490,9 @@ Write-Step "5" "Setup Liquidator Wallet"
 Write-Host "  [>] Setting USDC balance cho Liquidator..." -ForegroundColor Gray
 $balanceSlot = Invoke-Expression "cast index address $LIQUIDATOR $USDC_BALANCE_SLOT" 2>&1
 $balanceSlot = ($balanceSlot | Out-String).Trim()
-# 2,000,000 USDC = 0x1DCD650000 (du de liquidate nhieu position)
-$usdcHex = "0x" + "1DCD650000".PadLeft(64, '0')
+# 2,000,000 USDC = 2_000_000 * 1e6 = 2_000_000_000_000 raw = 0x1D1A94A2000
+# LƯU Ý: hex cũ 0x1DCD650000 = 128,000 USDC (SAI)
+$usdcHex = "0x" + "1D1A94A2000".PadLeft(64, '0')
 $null = Invoke-CastRpc "hardhat_setStorageAt $USDC $balanceSlot $usdcHex"
 
 $liquidatorUSDC_raw = Invoke-CastCall "$USDC `"balanceOf(address)(uint256)`" $LIQUIDATOR"

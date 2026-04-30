@@ -73,7 +73,20 @@
     </section>
 
     <section class="card table-card">
-      <div class="card-title">Recent Liquidations</div>
+      <div class="table-header">
+        <div class="card-title" style="margin-bottom: 0;">Recent Liquidations</div>
+        <div class="pagination-controls">
+          <label for="pageSize">Rows per page:</label>
+          <select id="pageSize">
+            <option value="10">10</option>
+            <option value="30">30</option>
+            <option value="100">100</option>
+          </select>
+          <button id="prevPage">Prev</button>
+          <span id="pageInfo">Page 1</span>
+          <button id="nextPage">Next</button>
+        </div>
+      </div>
       <div class="table-wrap">
         <table>
           <thead>

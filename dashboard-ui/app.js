@@ -7,10 +7,20 @@ let tableColumns = {
   profit: new Set(),
 };
 
+// Pagination state
+let currentPage = 1;
+let totalLiquidations = 0;
+
 const dbFileInput = document.getElementById("dbFile");
 const hoursSelect = document.getElementById("hours");
 const refreshBtn = document.getElementById("refreshBtn");
 const dbMeta = document.getElementById("dbMeta");
+
+// Pagination elements
+const pageSizeSelect = document.getElementById("pageSize");
+const prevPageBtn = document.getElementById("prevPage");
+const nextPageBtn = document.getElementById("nextPage");
+const pageInfoSpan = document.getElementById("pageInfo");
 
 const kpiAttempts = document.getElementById("kpiAttempts");
 const kpiSuccessRate = document.getElementById("kpiSuccessRate");
@@ -33,6 +43,11 @@ function formatShortAddress(address) {
 function formatTime(ts) {
   if (!ts) return "-";
   return new Date(ts * 1000).toLocaleString("vi-VN", { hour12: false });
+}
+
+function formatChartTime(ts) {
+  if (!ts) return "-";
+  return new Date(ts * 1000).toLocaleString("vi-VN", { hour12: false, hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' });
 }
 
 function rowsFromQuery(sql, params = []) {
@@ -134,10 +149,15 @@ function getProfitTimeseries(hours) {
   const since = getCurrentUnixSeconds() - (hours * 3600);
   const profitExpr = `COALESCE(${columnOrLiteral("liquidations", "profit_usd", "0")}, 0)`;
   const gasExpr = `COALESCE(${columnOrLiteral("liquidations", "gas_cost_usd", "0")}, 0)`;
-  return rowsFromQuery(
+  
+  let bucketSize = 3600;
+  if (hours <= 6) bucketSize = 60;
+  else if (hours <= 24) bucketSize = 300;
+
+  const rows = rowsFromQuery(
     `
       SELECT
-        CAST((timestamp / 3600) AS INTEGER) * 3600 AS bucket_ts,
+        CAST((timestamp / ${bucketSize}) AS INTEGER) * ${bucketSize} AS bucket_ts,
         SUM(${profitExpr} - ${gasExpr}) AS net_profit_usd,
         SUM(${gasExpr}) AS total_gas_cost_usd
       FROM liquidations
@@ -147,6 +167,43 @@ function getProfitTimeseries(hours) {
     `,
     [since],
   );
+
+  if (!rows.length) return [];
+
+  const startTs = rows[0].bucket_ts;
+  const endTs = rows[rows.length - 1].bucket_ts;
+  const filled = [];
+  let rowIdx = 0;
+
+  // Add 1 empty bucket before
+  filled.push({
+    bucket_ts: startTs - bucketSize,
+    net_profit_usd: 0,
+    total_gas_cost_usd: 0
+  });
+
+  // Fill gaps
+  for (let ts = startTs; ts <= endTs; ts += bucketSize) {
+    if (rowIdx < rows.length && rows[rowIdx].bucket_ts === ts) {
+      filled.push(rows[rowIdx]);
+      rowIdx++;
+    } else {
+      filled.push({
+        bucket_ts: ts,
+        net_profit_usd: 0,
+        total_gas_cost_usd: 0
+      });
+    }
+  }
+
+  // Add 1 empty bucket after
+  filled.push({
+    bucket_ts: endTs + bucketSize,
+    net_profit_usd: 0,
+    total_gas_cost_usd: 0
+  });
+
+  return filled;
 }
 
 function getStatusBreakdown(hours) {
@@ -166,7 +223,7 @@ function getStatusBreakdown(hours) {
   );
 }
 
-function getRecentLiquidations(limit = 20) {
+function getRecentLiquidations(limit = 30, offset = 0) {
   const statusExpr = getStatusExpression();
   const userExpr = columnOrLiteral("liquidations", "user_address", "'-'");
   const collateralExpr = columnOrLiteral("liquidations", "collateral_asset", "'-'");
@@ -186,9 +243,9 @@ function getRecentLiquidations(limit = 20) {
         ${statusExpr} AS status
       FROM liquidations
       ORDER BY timestamp DESC
-      LIMIT ?
+      LIMIT ? OFFSET ?
     `,
-    [limit],
+    [limit, offset],
   );
 }
 
@@ -250,7 +307,7 @@ function drawNoData(canvas, message) {
 
 function renderProfitChart(points) {
   const canvas = document.getElementById("profitChart");
-  const labels = points.map((p) => formatTime(p.bucket_ts));
+  const labels = points.map((p) => formatChartTime(p.bucket_ts));
   const netProfit = points.map((p) => Number(p.net_profit_usd || 0));
   const gasCost = points.map((p) => Number(p.total_gas_cost_usd || 0));
 
@@ -377,10 +434,16 @@ async function refreshDashboard() {
   refreshBtn.textContent = "Loading...";
 
   try {
+    const limit = Number(pageSizeSelect.value) || 30;
+    const offset = (currentPage - 1) * limit;
+
     const summary = getSummary(hours);
     const timeseries = getProfitTimeseries(hours);
     const statusRows = getStatusBreakdown(hours);
-    const recentRows = getRecentLiquidations(20);
+    const recentRows = getRecentLiquidations(limit, offset);
+
+    totalLiquidations = summary.total_attempts || 0; // estimate for pagination
+    updatePaginationControls(limit);
 
     updateKpis(summary);
     renderProfitChart(timeseries);
@@ -418,6 +481,45 @@ async function onDbSelected(event) {
   }
 }
 
+function updatePaginationControls(limit) {
+  if (!sqliteDb) return;
+  const totalPages = Math.ceil(totalLiquidations / limit) || 1;
+  pageInfoSpan.textContent = `Page ${currentPage} / ${totalPages}`;
+  prevPageBtn.disabled = currentPage <= 1;
+  nextPageBtn.disabled = currentPage >= totalPages;
+}
+
+function handlePageSizeChange() {
+  currentPage = 1;
+  refreshDashboard();
+}
+
+function handlePrevPage() {
+  if (currentPage > 1) {
+    currentPage -= 1;
+    refreshDashboard();
+  }
+}
+
+function handleNextPage() {
+  const limit = Number(pageSizeSelect.value) || 30;
+  const totalPages = Math.ceil(totalLiquidations / limit) || 1;
+  if (currentPage < totalPages) {
+    currentPage += 1;
+    refreshDashboard();
+  }
+}
+
 dbFileInput.addEventListener("change", onDbSelected);
-hoursSelect.addEventListener("change", refreshDashboard);
-refreshBtn.addEventListener("click", refreshDashboard);
+hoursSelect.addEventListener("change", () => {
+  currentPage = 1;
+  refreshDashboard();
+});
+refreshBtn.addEventListener("click", () => {
+  currentPage = 1;
+  refreshDashboard();
+});
+
+pageSizeSelect.addEventListener("change", handlePageSizeChange);
+prevPageBtn.addEventListener("click", handlePrevPage);
+nextPageBtn.addEventListener("click", handleNextPage);
