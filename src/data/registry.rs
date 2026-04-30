@@ -34,4 +34,8 @@ impl Registry {
             .map(|users| users.clone())
             .unwrap_or_default()
     }
+
+    pub fn clear(&self) {
+        self.asset_users.clear();
+    }
 }

@@ -90,7 +90,42 @@ impl RiskEngine {
                 Event::Block { block_number } => {
                     self.handle_block(block_number).await;
                 }
+                Event::TriggerDailyBootstrap { provider, chain_id, aave_pool_address, aave_oracle_address, aave_addresses_provider } => {
+                    self.handle_daily_bootstrap(provider, chain_id, aave_pool_address, aave_oracle_address, aave_addresses_provider).await;
+                }
             }
+        }
+    }
+
+    async fn handle_daily_bootstrap(
+        &mut self,
+        provider: std::sync::Arc<ethers::providers::Provider<ethers::providers::Http>>,
+        chain_id: u64,
+        aave_pool_address: ethers::types::Address,
+        aave_oracle_address: ethers::types::Address,
+        aave_addresses_provider: ethers::types::Address,
+    ) {
+        tracing::info!("Starting daily state reconciliation (re-bootstrap)...");
+        self.users.clear();
+        self.assets.clear();
+        self.registry.clear();
+        
+        let storage = Arc::clone(&self.storage);
+        let config = self.config.clone();
+        
+        if let Err(e) = crate::bootstrap::onchain::bootstrap_onchain_state(
+            self,
+            storage,
+            provider,
+            chain_id,
+            aave_pool_address,
+            aave_oracle_address,
+            aave_addresses_provider,
+            &config,
+        ).await {
+            tracing::error!("Daily re-bootstrap failed: {:?}", e);
+        } else {
+            tracing::info!("Daily state reconciliation completed successfully!");
         }
     }
 

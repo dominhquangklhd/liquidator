@@ -12,6 +12,7 @@ pub mod provider;
 pub mod oracle;
 pub mod profit;
 pub mod strategy;
+pub mod bootstrap;
 
 // Re-export commonly used types
 pub use storage::{HybridStorage, StorageConfig, LiquidationTarget, LiquidationEvent};

@@ -448,6 +448,42 @@ async fn main() {
                         nonce_sync_worker(executor_for_nonce, nonce_sync_interval_secs).await;
                     });
 
+                    // Daily Re-Bootstrap Worker: Periodic state reconciliation
+                    let daily_bootstrap_interval_secs = env_u64("DAILY_BOOTSTRAP_INTERVAL_SECS", 86400); // Default 24h
+                    let tx_for_cron = tx.clone();
+                    let executor_for_cron = Arc::clone(&executor);
+                    let provider_for_cron = Arc::clone(&provider);
+                    let pool_addr = aave_pool_address;
+                    let oracle_addr = aave_oracle_address;
+                    let provider_addr = aave_addresses_provider;
+
+                    tokio::spawn(async move {
+                        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(daily_bootstrap_interval_secs));
+                        interval.tick().await; // Skip initial tick
+
+                        loop {
+                            interval.tick().await;
+                            
+                            while executor_for_cron.pending_count().await > 0 {
+                                tracing::info!("System is busy liquidating. Delaying daily bootstrap by 10s...");
+                                tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+                            }
+
+                            tracing::info!("System is idle. Triggering daily state reconciliation...");
+                            let ev = Event::TriggerDailyBootstrap {
+                                provider: provider_for_cron.provider(),
+                                chain_id: provider_for_cron.chain_id(),
+                                aave_pool_address: pool_addr,
+                                aave_oracle_address: oracle_addr,
+                                aave_addresses_provider: provider_addr,
+                            };
+
+                            if let Err(e) = tx_for_cron.send(ev).await {
+                                tracing::error!("Failed to send TriggerDailyBootstrap event: {:?}", e);
+                            }
+                        }
+                    });
+
                     tracing::info!("✓ Executor workers spawned (dry_run=false)");
                 }
                 Err(e) => {
