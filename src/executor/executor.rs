@@ -354,7 +354,7 @@ impl LiquidationExecutor {
                 debt_asset_address,
                 user_address,
                 debt_to_cover,
-                false, // receiveAToken
+                true, // receiveAToken
             )
             .call()
             .await;
@@ -408,7 +408,7 @@ impl LiquidationExecutor {
             debt_asset_address,
             user_address,
             debt_to_cover,
-            false, // receiveAToken
+            true, // receiveAToken
         );
         
         // Get gas price
