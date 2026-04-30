@@ -9,7 +9,7 @@
 // - Thống kê hoạt động
 
 use ethers::providers::{Provider, Http, Ws, Middleware};
-use ethers::types::{Filter, H256, Log, I256};
+use ethers::types::{Filter, H256, Log, I256, U256};
 use ethers::abi::{decode, ParamType, Token};
 use anyhow::{Result, bail, Context};
 use futures::StreamExt;
@@ -408,34 +408,25 @@ impl OracleManager {
     }
 
     fn decode_answer_updated(log: &Log) -> Result<(i128, u128, u64)> {
-        let tokens = decode(
-            &[
-                ParamType::Int(256),
-                ParamType::Uint(256),
-                ParamType::Uint(256),
-            ],
-            log.data.as_ref(),
-        )?;
+        if log.topics.len() < 3 {
+            bail!("Missing topics for AnswerUpdated event");
+        }
 
-        let answer_token = tokens.get(0).ok_or_else(|| anyhow::anyhow!("Missing answer token"))?;
-        let round_token = tokens.get(1).ok_or_else(|| anyhow::anyhow!("Missing roundId token"))?;
-        let updated_token = tokens.get(2).ok_or_else(|| anyhow::anyhow!("Missing updatedAt token"))?;
-
-        let answer_i256 = match answer_token {
-            Token::Int(v) => I256::from_raw(*v),
-            _ => bail!("Unexpected answer token type"),
-        };
-
-        let answer_raw = answer_i256
+        // topics[0] is the event signature
+        // topics[1] is `current` (int256 indexed)
+        let current_i256 = I256::from_raw(U256::from_big_endian(log.topics[1].as_bytes()));
+        let answer_raw = current_i256
             .to_string()
             .parse::<i128>()
             .context("Answer value is outside i128 range")?;
 
-        let round_id = match round_token {
-            Token::Uint(v) => v.as_u128(),
-            _ => bail!("Unexpected roundId token type"),
-        };
+        // topics[2] is `roundId` (uint256 indexed)
+        let round_id = U256::from_big_endian(log.topics[2].as_bytes()).as_u128();
 
+        // log.data only contains non-indexed parameters: `updatedAt` (uint256)
+        let tokens = decode(&[ParamType::Uint(256)], log.data.as_ref())?;
+        
+        let updated_token = tokens.get(0).ok_or_else(|| anyhow::anyhow!("Missing updatedAt token"))?;
         let updated_at = match updated_token {
             Token::Uint(v) => v.as_u64(),
             _ => bail!("Unexpected updatedAt token type"),
