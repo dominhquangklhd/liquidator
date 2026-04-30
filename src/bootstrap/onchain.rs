@@ -20,7 +20,6 @@ use crate::storage::{HybridStorage, LiquidationTarget};
 const MAX_BOOTSTRAP_CANDIDATES: usize = 500;  // Final limit of candidates
 const MAX_SUBGRAPH_ACCOUNTS: usize = 500;     // Initial query limit from subgraph
 const MAX_PREFILTERED_ACCOUNTS: usize = 200;  // Prefiltering limit
-const MAX_POSITIONS_PER_ACCOUNT: usize = 50;  // Positions per account
 
 fn u256_to_f64(value: U256) -> f64 {
     value.to_string().parse::<f64>().unwrap_or(f64::INFINITY)
@@ -91,8 +90,9 @@ pub async fn bootstrap_onchain_state(
 
     let bootstrap_users: Vec<Address> = candidate_set.into_iter().collect();
     tracing::info!(
-        "Bootstrap candidate merge complete: source={} + hardhat_default=20 => total={} users",
+        "Bootstrap candidate merge complete: source={} + hardhat_default={} => total={} users",
         source_label,
+        hardhat_user_set.len(),
         bootstrap_users.len()
     );
 
@@ -123,14 +123,34 @@ pub async fn bootstrap_onchain_state(
         }
     };
 
+    // price_usd_map stores direct USD prices for drift checking later,
+    // avoiding double conversion through price_in_eth * eth_price_usd.
+    let mut price_usd_map: HashMap<String, f64> = HashMap::new();
     let mut assets_loaded = 0usize;
     for (symbol, reserve_addr) in &reserve_catalog {
-        let price_usd = oracle
+        let oracle_result = oracle
             .get_asset_price(*reserve_addr)
             .call()
             .await
-            .map(|v| u256_to_f64(v) / 1e8)
-            .unwrap_or_else(|_| fallback_price_usd(symbol.as_str(), eth_price_usd));
+            .map(|v| u256_to_f64(v) / 1e8);
+
+        let price_usd = match oracle_result {
+            Ok(p) if p > 0.0 => p,
+            Ok(_) => {
+                tracing::error!(
+                    "Oracle returned zero price for {}, skipping asset",
+                    symbol
+                );
+                continue;
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Oracle call failed for {}: {:?} — skipping asset (no stale fallback)",
+                    symbol, e
+                );
+                continue;
+            }
+        };
 
         let price_in_eth = if symbol == "ETH" || symbol == "WETH" {
             1.0
@@ -158,6 +178,7 @@ pub async fn bootstrap_onchain_state(
                 price_in_eth,
             },
         );
+        price_usd_map.insert(symbol.to_string(), price_usd);
         assets_loaded += 1;
     }
 
@@ -253,20 +274,7 @@ pub async fn bootstrap_onchain_state(
         let collateral_usd = u256_to_f64(total_collateral_base) / 1e8;
         let debt_usd = u256_to_f64(total_debt_base) / 1e8;
         let hf = u256_to_f64(hf_raw) / 1e18;
-        let current_lt = (u256_to_f64(current_lt_bps) / 10_000.0).clamp(0.0, 1.0);
-
-        // Keep local risk model aligned with Aave account-level liquidation threshold.
-        if current_lt > 0.0 {
-            if let Some(mut weth) = engine.assets.get_mut("WETH") {
-                weth.liquidation_threshold = current_lt;
-            }
-            if let Some(mut wsteth) = engine.assets.get_mut("WSTETH") {
-                wsteth.liquidation_threshold = current_lt;
-            }
-            if let Some(mut eth) = engine.assets.get_mut("ETH") {
-                eth.liquidation_threshold = current_lt;
-            }
-        }
+        let _account_lt = (u256_to_f64(current_lt_bps) / 10_000.0).clamp(0.0, 1.0);
 
         let user_id = format!("{:?}", user_addr);
         let mut user = User::new(user_id.clone());
@@ -306,15 +314,15 @@ pub async fn bootstrap_onchain_state(
                         continue;
                     }
 
-                    // Sanity check: compare reconstructed totals with account-level data
+                    // Sanity check: compare reconstructed totals with account-level data.
                     let reconstructed_collateral_usd: f64 = user.collateral.iter()
                         .filter_map(|(sym, amt)| {
-                            engine.assets.get(sym).map(|a| amt * a.price_in_eth * eth_price_usd)
+                            price_usd_map.get(sym).map(|p| amt * p)
                         })
                         .sum();
                     let reconstructed_debt_usd: f64 = user.debt.iter()
                         .filter_map(|(sym, amt)| {
-                            engine.assets.get(sym).map(|a| amt * a.price_in_eth * eth_price_usd)
+                            price_usd_map.get(sym).map(|p| amt * p)
                         })
                         .sum();
 
@@ -331,11 +339,13 @@ pub async fn bootstrap_onchain_state(
 
                     if collateral_drift > 0.05 || debt_drift > 0.05 {
                         tracing::warn!(
-                            "Position drift for {:?}: collateral ${:.2} vs ${:.2} ({:.1}%), debt ${:.2} vs ${:.2} ({:.1}%)",
+                            "Position drift for {:?}: collateral ${:.2} vs ${:.2} ({:.1}%), debt ${:.2} vs ${:.2} ({:.1}%) — using Aave account HF instead of reconstructed",
                             user_addr,
                             reconstructed_collateral_usd, collateral_usd, collateral_drift * 100.0,
                             reconstructed_debt_usd, debt_usd, debt_drift * 100.0,
                         );
+                        // Drift is too large - skip this user
+                        continue;
                     }
                 }
                 Err(e) => {
@@ -447,10 +457,14 @@ pub async fn bootstrap_onchain_state(
 
         engine.users.insert(user_id.clone(), user);
 
-        if let Err(e) = storage.update_user_hf(target.clone()).await {
-            tracing::error!("Failed to update bootstrap target in hot cache for {}: {:?}", user_id, e);
-        } else {
-            hot_cache_updated += 1;
+        // Only insert into hot cache (in-memory); DB persistence is done in
+        // a single batch below via persist_targets_to_db to avoid double writes.
+        if target.health_factor < hot_cache_threshold {
+            if let Err(e) = storage.update_user_hf(target.clone()).await {
+                tracing::error!("Failed to update bootstrap target in hot cache for {}: {:?}", user_id, e);
+            } else {
+                hot_cache_updated += 1;
+            }
         }
         persisted_targets.push(target);
     }
@@ -539,25 +553,26 @@ async fn fetch_top_users_from_subgraph() -> Result<Vec<Address>> {
 
     // First try rich account positions query and prefilter likely risky users (HF <= 2)
     // to reduce expensive on-chain calls during bootstrap.
-    let rich_query = r#"query BootstrapUsersRich {
-        accounts(first: 500) {
+    let accounts_limit = MAX_SUBGRAPH_ACCOUNTS;
+    let rich_query = format!(r#"query BootstrapUsersRich {{
+        accounts(first: {accounts_limit}) {{
             id
-            positions(first: 50, where: {
+            positions(first: 100, where: {{
                 balance_not: "0"
-            }) {
+            }}) {{
                 balance
-                market {
+                market {{
                     liquidationThreshold
-                    inputToken {
+                    inputToken {{
                         decimals
                         lastPriceUSD
-                    }
-                }
-            }
-        }
-    }"#;
+                    }}
+                }}
+            }}
+        }}
+    }}"#);
 
-    let rich_body = json!({ "query": rich_query });
+    let rich_body = json!({ "query": &rich_query });
     if let Ok(resp) = client.post(&endpoint).json(&rich_body).send().await {
         if resp.status().is_success() {
             if let Ok(value) = resp.json::<Value>().await {
@@ -869,18 +884,6 @@ fn default_reserve_catalog(_chain_id: u64) -> HashMap<String, Address> {
     }
 
     out
-}
-
-fn fallback_price_usd(symbol: &str, eth_price_usd: f64) -> f64 {
-    match symbol {
-        "WETH" | "ETH" => eth_price_usd,
-        "WSTETH" => eth_price_usd,
-        "USDC" | "USDT" | "DAI" => 1.0,
-        "WBTC" => 60000.0,
-        "LINK" => 10.0,
-        "AAVE" => 100.0,
-        _ => 1.0,
-    }
 }
 
 fn default_liquidation_threshold(symbol: &str, _chain_id: u64) -> f64 {
