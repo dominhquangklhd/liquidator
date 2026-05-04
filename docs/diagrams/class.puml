@@ -1,4 +1,4 @@
-@startuml system_class_diagram_correct
+@startuml system_class_diagram
 skinparam classAttributeIconSize 0
 skinparam backgroundColor #FFFFFF
 skinparam class {
@@ -8,84 +8,97 @@ skinparam class {
     FontName Arial
 }
 
+legend right
+  Type conventions (language-agnostic)
+  - String, Number, Boolean, Timestamp
+  - List<T>, Map<K, V>, Optional<T>
+  - AsyncResult<T> for async operation with possible error
+  - EventChannel<T> for event stream/channel
+endlegend
+
 ' ===================== BOUNDARY =====================
 package "Boundary Layer" {
     class AaveProvider <<boundary>> {
-        + watch_blocks(tx: mpsc::Sender): Result<()>
-        + watch_aave_events(pool_addr): Result<()>
-        + get_chainid(): u64
-        + call_liquidation(params): Result<TxHash>
+        - rpc_client: BlockchainClient
+        - chain_id: Number
+        + watch_blocks(tx: EventChannel<Event>): AsyncResult<Void>
+        + watch_aave_events(pool_address: Address, tx: EventChannel<Event>): AsyncResult<Void>
     }
 
     class ChainlinkFeed <<boundary>> {
-        + new(provider, config): Self
-        + async initialize(): Result<()>
-        + async latest_price(): PriceData
-        + async latest_answer(): f64
+        - aggregator_client: OracleContractClient
+        - config: PriceFeedConfig
+        + initialize(): AsyncResult<Void>
+        + latest_price(): AsyncResult<PriceData>
     }
 }
 
 ' ===================== CONTROL =====================
 package "Control Layer" {
     class OracleManager <<control>> {
-        + async new(config, provider, event_tx): Result<Self>
-        + async get_price(asset_id: &str): Option<PriceData>
-        + async get_price_usd(asset_id: &str): Option<f64>
-        + async poll_all(): Result<usize>
+        - config: OracleConfig
+        - feeds: Map<String, ChainlinkFeed>
+        - price_cache: Map<String, PriceData>
+        - event_tx: EventChannel<Event>
+        + poll_all(): AsyncResult<Number>
+        + get_price(asset_id: String): Optional<PriceData>
     }
 
     class RiskEngine <<control>> {
-        + new(receiver: mpsc::Receiver): Self
-        + with_config(receiver, storage, config): Self
-        + async run(&mut self): void
+        - users: Map<UserId, User>
+        - registry: Registry
+        - storage: HybridStorage
+        + run(): Void
     }
 
     class ProfitCalculator <<control>> {
-        + new(config, gas_estimator, price_cache): Self
-        + async evaluate(target: LiquidationTarget): ProfitEstimate
-        + async find_profitable(targets: Vec): Vec<ProfitEstimate>
+        - config: ProfitConfig
+        - price_cache: Map<String, PriceData>
+        + evaluate(target: LiquidationTarget): AsyncResult<ProfitEstimate>
+        + find_profitable(targets: List<LiquidationTarget>): AsyncResult<List<ProfitEstimate>>
     }
 
     class StrategyDecider <<control>> {
-        + new(config: StrategyConfig): Self
-        + async create_plan(targets: Vec): ExecutionPlan
-        + async decide_single(target: LiquidationTarget): StrategyDecision
+        - config: StrategyConfig
+        - circuit_breaker: CircuitBreaker
+        + create_plan(targets_with_estimates: List<TargetEstimatePair>): AsyncResult<ExecutionPlan>
     }
 
     class LiquidationExecutor <<control>> {
-        + async new(config, provider): Result<Self>
-        + async liquidate(target: &LiquidationTarget): LiquidationResult
-        + async liquidate_with_method(target, method): LiquidationResult
+        - config: ExecutorConfig
+        - provider: BlockchainClient
+        - nonce_manager: NonceManager
+        + liquidate(target: LiquidationTarget): AsyncResult<LiquidationResult>
     }
 }
 
 ' ===================== ENTITY =====================
 package "Entity Layer" {
     class HybridStorage <<entity>> {
-        + async new(): Result<Self>
-        + async update_user_hf(target: LiquidationTarget): Result<()>
-        + async get_top_targets(limit: usize): Vec<LiquidationTarget>
-        + async remove_target(user_address: &str): void
+        - hot_cache: HotCache
+        - cold_storage: ColdStorage
+        + update_user_hf(target: LiquidationTarget): AsyncResult<Void>
+        + get_top_targets(limit: Number): List<LiquidationTarget>
     }
 
     class HotCache <<entity>> {
-        - cache: BTreeMap<String, LiquidationTarget>
-        + insert(key, value): void
-        + get(key): Option<LiquidationTarget>
-        + remove(key): void
+        - targets: Map<String, LiquidationTarget>
+        - threshold: Number
+        + insert(target: LiquidationTarget): Void
+        + get_top(n: Number): List<LiquidationTarget>
     }
 
     class ColdStorage <<entity>> {
-        + query(sql): ResultSet
-        + execute(sql, params): Result<()>
-        + persist(target): Result<()>
+        - db_connection_pool: RelationalDbPool
+        + load_risky_users(threshold: Number): AsyncResult<List<LiquidationTarget>>
+        + insert_liquidation(event: LiquidationEvent): AsyncResult<Number>
     }
 
     class NonceManager <<entity>> {
-        + async new(provider, address): Result<Self>
-        + async get_next(): u64
-        + async confirm(nonce): void
-        + async fail(nonce): void
+        - current_nonce: Number
+        - pending: Map<Number, TxStatus>
+        + get_next(): Number
+        + sync(): AsyncResult<Void>
     }
 }
 
@@ -94,21 +107,15 @@ package "Entity Layer" {
 ' --- Composition ---
 HybridStorage *-- HotCache
 HybridStorage *-- ColdStorage
-OracleManager *-- ChainlinkFeed : feeds: HashMap
+OracleManager *-- ChainlinkFeed : feeds map
 LiquidationExecutor *-- NonceManager
 
-' --- Dependency ---
-AaveProvider ..> HybridStorage      : "đẩy dữ liệu sự kiện"
-AaveProvider ..> OracleManager      : "thông báo cập nhật giá"
-
-RiskEngine ..> OracleManager        : "gọi get_price_usd()"
-RiskEngine ..> HybridStorage        : "gọi insert / remove()"
-RiskEngine ..> ProfitCalculator     : "chuyển targets rủi ro"
-
-ProfitCalculator ..> OracleManager  : "gọi get_price_usd()"
-ProfitCalculator ..> StrategyDecider : "chuyển targets khả thi"
-
-StrategyDecider ..> LiquidationExecutor : "truyền ExecutionPlan"
-LiquidationExecutor ..> AaveProvider    : "gọi call_liquidation()"
+' --- Runtime dependencies ---
+AaveProvider ..> RiskEngine : publish protocol events
+OracleManager ..> RiskEngine : publish price updates
+RiskEngine ..> HybridStorage : update/remove targets
+ProfitCalculator ..> OracleManager : consume price cache
+StrategyDecider ..> ProfitCalculator : consume ProfitEstimate
+StrategyDecider ..> LiquidationExecutor : produce ExecutionMethod
 
 @enduml

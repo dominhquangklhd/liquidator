@@ -1,0 +1,163 @@
+@startuml domain_class_diagram
+skinparam classAttributeIconSize 0
+skinparam backgroundColor #FFFFFF
+skinparam class {
+    BackgroundColor #EAF4EC
+    BorderColor #1E5631
+    ArrowColor #1E5631
+    FontName Arial
+}
+
+hide empty members
+
+legend right
+  Domain View focus
+  - Business concepts and responsibilities
+  - Platform details are abstracted
+  - Data types are language-agnostic
+endlegend
+
+package "Core Domain" {
+    class UserPosition {
+        + userId: String
+        + collateralValueUsd: Number
+        + debtValueUsd: Number
+        + healthFactor: Number
+        + lastUpdatedAt: Timestamp
+    }
+
+    class AssetPrice {
+        + assetId: String
+        + priceUsd: Number
+        + updatedAt: Timestamp
+        + source: String
+    }
+
+    class LiquidationTarget {
+        + userId: String
+        + healthFactor: Number
+        + totalCollateralUsd: Number
+        + totalDebtUsd: Number
+        + estimatedProfitUsd: Number
+        + riskScore: Number
+    }
+
+    class RiskAssessment {
+        + userId: String
+        + healthFactor: Number
+        + riskBucket: String
+        + liquidatable: Boolean
+    }
+
+    class ProfitEstimate {
+        + userId: String
+        + grossProfitUsd: Number
+        + gasCostUsd: Number
+        + netProfitUsd: Number
+        + isProfitable: Boolean
+    }
+
+    class StrategyDecision {
+        + userId: String
+        + method: String
+        + priorityScore: Number
+        + reason: String
+    }
+
+    class ExecutionPlan {
+        + generatedAt: Timestamp
+        + totalCandidates: Number
+        + executableCount: Number
+    }
+
+    class LiquidationResult {
+        + userId: String
+        + success: Boolean
+        + txHash: String
+        + realizedProfitUsd: Number
+        + executedAt: Timestamp
+    }
+
+    class LiquidationRecord {
+        + liquidationId: Number
+        + userId: String
+        + txHash: String
+        + profitUsd: Number
+        + timestamp: Timestamp
+    }
+}
+
+package "Application Services" {
+    class OracleManager <<service>> {
+        + refreshPrices(): Void
+        + getPrice(assetId: String): AssetPrice
+        + publishPriceUpdate(): Void
+    }
+
+    class RiskEngine <<service>> {
+        + processEvent(event): Void
+        + assessPosition(position: UserPosition): RiskAssessment
+        + syncTarget(target: LiquidationTarget): Void
+    }
+
+    class ProfitCalculator <<service>> {
+        + evaluate(target: LiquidationTarget): ProfitEstimate
+        + rankProfitable(targets): List<ProfitEstimate>
+    }
+
+    class StrategyDecider <<service>> {
+        + createPlan(estimates): ExecutionPlan
+        + decideSingle(target, estimate): StrategyDecision
+    }
+
+    class LiquidationExecutor <<service>> {
+        + execute(target, decision): LiquidationResult
+    }
+
+    class HybridStorage <<service>> {
+        + upsertTarget(target: LiquidationTarget): Void
+        + getTopTargets(limit: Number): List<LiquidationTarget>
+        + saveRecord(record: LiquidationRecord): Void
+    }
+}
+
+package "External Context" {
+    class DeFiProtocol <<external>>
+    class PriceOracleNetwork <<external>>
+    class BlockchainNetwork <<external>>
+}
+
+' Core model relations
+UserPosition --> RiskAssessment : assessed into
+RiskAssessment --> LiquidationTarget : when risky
+LiquidationTarget --> ProfitEstimate : profitability
+ProfitEstimate --> StrategyDecision : decision input
+StrategyDecision --> ExecutionPlan : prioritized in
+ExecutionPlan --> LiquidationResult : executed as
+LiquidationResult --> LiquidationRecord : persisted as
+
+' Service to domain
+OracleManager ..> AssetPrice : manages
+RiskEngine ..> UserPosition : evaluates
+RiskEngine ..> LiquidationTarget : produces
+ProfitCalculator ..> ProfitEstimate : computes
+StrategyDecider ..> StrategyDecision : produces
+LiquidationExecutor ..> LiquidationResult : returns
+HybridStorage ..> LiquidationTarget : stores
+HybridStorage ..> LiquidationRecord : archives
+
+' Service collaboration
+OracleManager ..> RiskEngine : price updates
+RiskEngine ..> HybridStorage : upsert/remove targets
+ProfitCalculator ..> OracleManager : read prices
+StrategyDecider ..> ProfitCalculator : consume estimates
+LiquidationExecutor ..> StrategyDecider : consume decision
+LiquidationExecutor ..> HybridStorage : persist execution
+
+' External context integration
+OracleManager ..> PriceOracleNetwork : pulls market prices
+RiskEngine ..> DeFiProtocol : consumes protocol events
+LiquidationExecutor ..> DeFiProtocol : calls liquidation API
+LiquidationExecutor ..> BlockchainNetwork : submits transaction
+
+@enduml

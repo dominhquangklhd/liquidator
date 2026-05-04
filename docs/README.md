@@ -7,6 +7,8 @@
 | File | Nội dung |
 |------|---------|
 | [00_system_overview.puml](diagrams/00_system_overview.puml) | Kiến trúc tổng thể — Component Diagram |
+| [class.puml](diagrams/class.puml) | Sơ đồ lớp tổng thể (Class Diagram) bám theo code hiện tại |
+| [class_domain_view.puml](diagrams/class_domain_view.puml) | Sơ đồ lớp Domain View (mức nghiệp vụ, độc lập ngôn ngữ) |
 
 ---
 
