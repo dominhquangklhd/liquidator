@@ -13,6 +13,20 @@
 # Cach dung:
 #   .\scripts\single-user\setup_liquidation_scenario_wstETH.ps1
 #   .\scripts\single-user\setup_liquidation_scenario_wstETH.ps1 -SeedBorrowerWstEth 250
+#
+# HUONG DAN CHO KICH BAN 5 (Partial Liquidation):
+#   - User duoc cap von mac dinh rat lon (1000 wstETH = ~$3.5M).
+#   - Chay script nay de setup, sau do chay `crash_price_wstETH.ps1 -PriceDrop 8`
+#     de HF rot xuong ~0.98. Bot se chi duoc phep thanh ly 50% (Close Factor = 0.5).
+#   - Sau khi thanh ly lan 1, tiep tuc crash them 15% de test thanh ly lan 2 tren cung 1 vi the.
+#
+# HUONG DAN CHO KICH BAN 6 (Vi liquidator khong du so du):
+#   - De test bot xu ly the nao khi vi khong du USDC de tra no thay cho user:
+#   - Keo xuong dong 509, sua muc cap von cua Liquidator thanh mot con so rat nho:
+#     Tu: $usdcHex = "0x" + "746A528800".PadLeft(64, '0')  (500k USDC)
+#     Thanh: $usdcHex = "0x" + "F4240".PadLeft(64, '0')    (1 USDC)
+#   - Chay lai script nay, bot se phai tinh toan lai so luong duoc phep thanh ly (capapped by balance)
+#     hoac bo qua (skip) neu so du qua nho.
 # ============================================================================
 
 param(
@@ -40,8 +54,8 @@ $MAINNET_CONFIG = @{
 # Hardhat default accounts (Account #2 & #3)
 $BORROWER        = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"  # Account #2
 $BORROWER_KEY    = "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a"
-$LIQUIDATOR      = "0x90F79bf6EB2c4f870365E785982E1f101E93b906"  # Account #3
-$LIQUIDATOR_KEY  = "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6"
+$LIQUIDATOR      = "0xFABB0ac9d68B0B445fB7357272Ff202C5651694a"  # Account #13
+$LIQUIDATOR_KEY  = "0xa267530f49f8280200edf313ee7af6b827f2a8bce2897751d06a843f644967b1"
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -139,9 +153,11 @@ function Invoke-CastRpc {
 
 function Write-Step {
     param([string]$Step, [string]$Description)
+    $stepTime = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.ffffffZ")
     Write-Host ""
     Write-Host "----------------------------------------" -ForegroundColor Cyan
     Write-Host "  STEP $Step : $Description" -ForegroundColor Cyan
+    Write-Host "  Time: $stepTime" -ForegroundColor DarkGray
     Write-Host "----------------------------------------" -ForegroundColor Cyan
 }
 
@@ -230,6 +246,10 @@ function Get-HardhatAccounts {
 Write-Host "============================================" -ForegroundColor Green
 Write-Host "  SETUP LIQUIDATION SCENARIO (wstETH COLL)" -ForegroundColor Green
 Write-Host "============================================" -ForegroundColor Green
+Write-Host ""
+$scriptStartTime = Get-Date
+Write-Host "  [*] Start time: $($scriptStartTime.ToString('yyyy-MM-dd HH:mm:ss'))" -ForegroundColor Magenta
+Write-Host ""
 
 if (-not (Get-Command "cast" -ErrorAction SilentlyContinue)) {
     Write-Host "[X] Cast (Foundry) chua duoc cai dat!" -ForegroundColor Red

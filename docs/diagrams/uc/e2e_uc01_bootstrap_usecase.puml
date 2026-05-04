@@ -1,4 +1,4 @@
-﻿@startuml
+@startuml
 skinparam packageStyle rectangle
 skinparam backgroundColor #FFFFFF
 skinparam usecase {
@@ -18,16 +18,16 @@ rectangle "UC01: Khởi động và đồng bộ dữ liệu hệ thống (Boots
 
     usecase "Khởi động và đồng bộ dữ liệu hệ thống" as UC01
 
-    usecase "Truy vấn danh sách ví đang có dư nợ" as Sub1
-    usecase "Đối chiếu số dư thực tế trên chuỗi" as Sub2
+    usecase "Sàng lọc danh sách ví rủi ro (HF <= 2)" as Sub1
+    usecase "Đọc chi tiết vị thế từng tài sản trên chuỗi" as Sub2
     usecase "Chuẩn hóa và lưu vào kho lưu trữ lai" as Sub3
     usecase "Tính toán hệ số sức khỏe ban đầu" as Sub4
 
-    usecase "Sử dụng danh sách ví\ndự phòng từ cơ sở dữ liệu nội bộ" as Ext1
-    usecase "Bỏ qua ví lỗi,\ntiếp tục với tài khoản khác" as Ext2
+    usecase "Sử dụng danh sách ví\ndự phòng từ cơ sở dữ liệu/env" as Ext1
+    usecase "Bỏ qua ví lỗi, chứa tài sản\nkhông hỗ trợ hoặc lệch dữ liệu" as Ext2
 }
 
-Admin --> UC01 : "Khởi động hoặc\nyêu cầu tái đồng bộ"
+Admin --> UC01 : "Khởi động hệ thống\n(Cron tự động lặp lại hàng ngày)"
 Graph --> Sub1 : "Cung cấp dữ liệu\nđã lập chỉ mục"
 RPC --> Sub2 : "Cung cấp dữ liệu\ntrên chuỗi"
 
@@ -37,6 +37,6 @@ UC01 ..> Sub3 : <<include>>
 UC01 ..> Sub4 : <<include>>
 
 Ext1 .up.> UC01 : <<extend>>\nKhi The Graph mất kết nối\nhoặc trả về dữ liệu rỗng
-Ext2 .up.> Sub2 : <<extend>>\nKhi RPC Provider lỗi\nở một địa chỉ ví cụ thể
+Ext2 .up.> Sub2 : <<extend>>\nKhi RPC Provider lỗi\nhoặc dữ liệu không hợp lệ
 
 @enduml

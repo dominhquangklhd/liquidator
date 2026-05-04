@@ -1,36 +1,59 @@
-﻿@startuml
+@startuml
 title UC01: Khởi động và đồng bộ dữ liệu hệ thống (Bootstrap)
 
 actor "Admin" as Admin
+participant "Bootstrap Module" as Boot
 participant "Hybrid Storage" as Storage
 actor "The Graph" as Graph
 actor "RPC Provider" as RPC
 participant "Risk Engine" as RE
 
-Admin -> Storage: Khởi động hệ thống hoặc\nyêu cầu tái đồng bộ
-activate Storage
+Admin -> Boot: Khởi động hệ thống
+activate Boot
 
-Storage -> Graph: Truy vấn danh sách ví\nđang có dư nợ (GraphQL)
+note right of Admin
+  **Lưu ý:** Việc đồng bộ cũng được
+  tokio cron job tự động kích hoạt
+  mỗi 24h trong background.
+end note
+
+Boot -> Graph: Truy vấn GraphQL lọc danh sách ví\n(ưu tiên rủi ro HF <= 2)
 activate Graph
-Graph --> Storage: Trả về danh sách địa chỉ ví có dư nợ
+Graph --> Boot: Trả về danh sách ví ưu tiên
 deactivate Graph
 
-loop Xử lý từng ví trong danh sách
-    Storage -> RPC: Gọi getUserAccountData\nđể lấy số dư thực tế trên chuỗi
-    activate RPC
-    RPC --> Storage: Trả về khối lượng thế chấp\nvà dư nợ tại block mới nhất
-    deactivate RPC
+opt Dữ liệu rỗng hoặc lỗi
+    Boot -> Storage: Tải danh sách ví dự phòng từ CSDL
+    Storage --> Boot: Danh sách ví
 end
 
-Storage -> Storage: Chuẩn hóa và lưu\nbản ghi trạng thái vị thế
+loop Xử lý từng ví trong danh sách
+    Boot -> RPC: Gọi getUserAccountData\nđể lấy tổng số dư trên chuỗi
+    activate RPC
+    RPC --> Boot: Trả về khối lượng thế chấp,\ndư nợ và HF cơ bản
+    deactivate RPC
 
-Storage -> RE: Nạp danh sách vị thế\nvào Risk Engine
+    Boot -> RPC: Đọc chi tiết số dư từng tài sản\n(thông qua AaveV3Reader)
+    activate RPC
+    RPC --> Boot: Trả về số dư collateral và debt\ncho từng reserve
+    deactivate RPC
+    
+    Boot -> Boot: Kiểm tra drift dữ liệu và\nloại bỏ ví chứa tài sản không hỗ trợ
+end
+
+Boot -> Boot: Chuẩn hóa và gán rủi ro ban đầu (Risk Score, Bucket)
+
+Boot -> Storage: Lưu batch toàn bộ vị thế\nvào SQLite và Hot Cache
+activate Storage
+Storage --> Boot: Hoàn tất lưu trữ
+deactivate Storage
+
+Boot -> RE: Nạp trực tiếp vị thế và mapping\nvào bộ nhớ (Risk Engine)
 activate RE
-RE -> RE: Tính toán Health Factor ban đầu
-RE --> Storage: Hoàn tất nạp bản đồ rủi ro nội bộ
+RE --> Boot: Hoàn tất nạp bản đồ rủi ro nội bộ
 deactivate RE
 
-Storage --> Admin: Hệ thống chuyển sang\ntrạng thái "Sẵn sàng"
-deactivate Storage
+Boot --> Admin: Hệ thống hoàn tất đồng bộ,\ntrạng thái "Sẵn sàng"
+deactivate Boot
 
 @enduml

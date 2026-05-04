@@ -370,6 +370,18 @@ function renderStatusChart(statusRows) {
     return;
   }
 
+  // Map status names to semantic colors so chart matches table pills
+  const statusColorMap = {
+    success: "#2f855a", // green
+    failed: "#c53030",  // red
+    pending: "#d69e2e", // amber
+    unknown: "#4a5568", // gray
+  };
+
+  const backgroundColor = labels.map((l) =>
+    statusColorMap[String(l).toLowerCase()] || "#4a5568",
+  );
+
   statusChart = new Chart(canvas, {
     type: "doughnut",
     data: {
@@ -377,7 +389,7 @@ function renderStatusChart(statusRows) {
       datasets: [
         {
           data: values,
-          backgroundColor: ["#2f855a", "#c53030", "#2b6cb0", "#d69e2e", "#4a5568"],
+          backgroundColor,
         },
       ],
     },

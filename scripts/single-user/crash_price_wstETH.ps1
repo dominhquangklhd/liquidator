@@ -147,9 +147,11 @@ function Get-HealthFactorFromAccountData {
 function Write-Step {
     param([string]$Step, [string]$Description)
 
+    $stepTime = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.ffffffZ")
     Write-Host ""
     Write-Host "----------------------------------------" -ForegroundColor Cyan
     Write-Host "  STEP $Step : $Description" -ForegroundColor Cyan
+    Write-Host "  Time: $stepTime" -ForegroundColor DarkGray
     Write-Host "----------------------------------------" -ForegroundColor Cyan
 }
 
@@ -160,6 +162,9 @@ function Write-Step {
 Write-Host "============================================" -ForegroundColor Red
 Write-Host "  CRASH WSTETH PRICE - DEPEG TRIGGER" -ForegroundColor Red
 Write-Host "============================================" -ForegroundColor Red
+Write-Host ""
+$scriptStartTime = Get-Date
+Write-Host "  [*] Start time: $($scriptStartTime.ToString('yyyy-MM-dd HH:mm:ss'))" -ForegroundColor Magenta
 Write-Host ""
 Write-Host "  Price Drop: $PriceDrop%" -ForegroundColor Yellow
 

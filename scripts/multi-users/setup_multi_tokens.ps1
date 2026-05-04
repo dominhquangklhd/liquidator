@@ -30,7 +30,7 @@ $MAINNET_CONFIG = @{
 $BORROWERS = @(
     @{ Address = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"; Key = "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a"; Label = "User-1 (cbETH coll)" },
     @{ Address = "0x90F79bf6EB2c4f870365E785982E1f101E93b906"; Key = "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6"; Label = "User-2 (LUSD debt)" },
-    @{ Address = "0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65"; Key = "0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926b"; Label = "User-3 (Multi)" },
+    @{ Address = "0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65"; Key = "0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a"; Label = "User-3 (Multi)" },
     @{ Address = "0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc"; Key = "0x8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba"; Label = "User-4 (Multi)" },
     @{ Address = "0x976EA74026E726554dB657fA54763abd0C3a0aa9"; Key = "0x92db14e403b83dfe3df233f83dfa3a0d7096f21ca9b0d6d6b8d88b2b4ec1564e"; Label = "User-5 (Multi)" }
 )
