@@ -1,48 +1,166 @@
-# DeFi Risk Monitoring System
+# Hệ thống Liquidator
 
-A high-performance, event-driven risk monitoring system in Rust for a DeFi lending protocol.
+Hệ thống giám sát rủi ro và gợi ý thanh lý cho giao thức cho vay DeFi, xây dựng bằng Rust theo kiến trúc event-driven.
 
-## Architecture
+## Giới thiệu nhanh
 
-The system is designed with a clean, modular architecture:
+- Theo dõi giá từ oracle, cập nhật vị thế người dùng theo sự kiện.
+- Tính Health Factor (HF) và phân loại rủi ro theo mức độ.
+- Tối ưu hiệu năng bằng cập nhật cục bộ theo từng tài sản bị ảnh hưởng.
 
--   **`src/events`**: Defines the `Event` enum (Price, Block) and the async `Dispatcher`.
--   **`src/risk`**: Contains the core risk logic:
-    -   `engine.rs`: The main event loop processing updates.
-    -   `health_factor.rs`: Logic to calculate User HF.
-    -   `bucket.rs`: Risk bucket classification (Safe, Watch, Risk, Danger, Liquidate).
--   **`src/data`**: Domain models (`User`, `Asset`) and the `Registry` (Asset -> User index).
--   **`src/executor`**: Placeholder for liquidation execution.
+## Cấu trúc module chính
 
-## Key Features
+- `src/events`: Định nghĩa `Event` (Price, Block) và `Dispatcher` bất đồng bộ.
+- `src/risk`: Logic core tính rủi ro.
+    - `engine.rs`: Vòng xử lý sự kiện.
+    - `health_factor.rs`: Công thức tính HF.
+    - `bucket.rs`: Phân loại rủi ro (Safe, Watch, Risk, Danger, Liquidate).
+- `src/data`: Mô hình dữ liệu (`User`, `Asset`) và `Registry` (Asset -> User index).
+- `src/executor`: Khung thực thi thanh lý (placeholder).
 
--   **Event-Driven**: Reacts to price updates and block ticks immediately.
--   **O(1) Lookup**: Uses an Asset Registry to find affected users without scanning the entire user base.
--   **Incremental Updates**: Only recalculates HF for users affected by specific asset price changes.
--   **Concurrency**: Uses `dashmap` for concurrent handling of state (though currently single-threaded runner for strict ordering, can be parallelized).
+## Tính năng chính
 
-## How to Run
+- Event-driven, phản ứng ngay khi giá cập nhật.
+- Tra cứu O(1) người dùng bị ảnh hưởng theo tài sản.
+- Cập nhật cục bộ, không quét toàn bộ người dùng.
+- Có thể mở rộng đa luồng trong tương lai (hiện chạy tuần tự để đảm bảo ordering).
 
-1.  Ensure you have Rust installed.
-2.  **IMPORTANT**: You must have the MSVC C++ Build Tools installed (specifically `link.exe`) on Windows.
-3.  Run the simulation:
+## Yêu cầu môi trường
+
+- Rust stable
+- Windows: MSVC C++ Build Tools (có `link.exe`)
+- Node.js + npm (để chạy Hardhat fork)
+- Foundry (cần `cast`, `forge`) để chạy các script on-chain
+- PowerShell (các script test là `.ps1`)
+
+## Cấu hình môi trường
+
+Các cấu hình liên quan RPC và executor:
+
+- [src/provider/rpc.rs](src/provider/rpc.rs)
+- [src/oracle/config.rs](src/oracle/config.rs)
+- [src/executor/config.rs](src/executor/config.rs)
+
+Biến môi trường thường dùng:
+
+```text
+RPC_URL=...
+PRIVATE_KEY=...
+CHAIN_ID=...
+ETH_RPC_URL=...
+```
+
+`ETH_RPC_URL` dùng để fork mainnet khi chạy Hardhat.
+
+## Build và chạy mô phỏng cơ bản
 
 ```bash
+cargo build
 cargo run
 ```
 
-## Simulation Flow
+Chạy ví dụ storage (nếu cần):
 
-When you run the project, `main.rs` sets up a scenario:
-1.  Populates `ETH` and `USDC` assets.
-2.  Creates a **Safe User** (HF ~3.4) and a **Risky User** (HF ~1.06).
-3.  Simulates an **ETH Price Crash** (1.0 -> 0.9).
-4.  The system detects the price change, identifies users holding ETH, recalculates HF.
-5.  **Risky User** drops below HF 1.0 (Liquidation Threshold).
-6.  System logs a `LIQUIDATION ALERT`.
+```bash
+cargo run --example storage_example
+```
 
-## Engineering Decisions
+## Chạy Hardhat local fork (mainnet fork)
 
--   **DashMap**: Used for thread-safe access to User and Asset state, allowing future multi-threaded readers (e.g., API).
--   **Tokio Channels**: Used for the event bus to decouple event producers (Network/RPC) from the Consumer (Risk Engine).
--   **Registry**: An inverse index (`AssetId -> Vec<UserId>`) is crucial for avoiding O(N) scans.
+1) Cài dependencies cho Hardhat:
+
+```bash
+cd fork-blockchain
+npm install
+```
+
+2) Thiết lập RPC nguồn để fork (PowerShell):
+
+```powershell
+$env:ETH_RPC_URL="https://mainnet.your-provider.com/your-key"
+```
+
+3) Chạy Hardhat fork:
+
+```powershell
+\scripts\start_hardhat.ps1
+```
+
+Tùy chọn nâng cao:
+
+```powershell
+\scripts\start_hardhat.ps1 -RpcUrl "https://..." -ForkBlock 24700000 -Port 8545
+```
+
+Sau khi chạy, RPC local sẽ ở `http://127.0.0.1:8545`.
+
+## Chạy các kịch bản test bằng script
+
+Tất cả script yêu cầu Hardhat đang chạy và Foundry đã cài đặt.
+
+### Kịch bản single-user (wstETH)
+
+```powershell
+\scripts\single-user\setup_liquidation_scenario_wstETH.ps1
+\scripts\single-user\crash_price_wstETH.ps1 -PriceDrop 15
+cargo run
+```
+
+### Kịch bản multi-user (nhiều borrower)
+
+```powershell
+\scripts\multi-users\setup_multi_liquidation_wstETH.ps1
+\scripts\multi-users\crash_price_multi_wstETH.ps1 -PriceDrop 30
+cargo run
+```
+
+### Kịch bản multi-token (wstETH + WBTC)
+
+```powershell
+\scripts\multi-users\setup_multi_tokens.ps1
+\scripts\multi-users\crash_multi_tokens.ps1 -PriceDrop 8 -DebtPump 5
+cargo run
+```
+
+### Benchmark latency
+
+```powershell
+\scripts\single-user\benchmark_latency_wstETH.ps1
+```
+
+## Chạy dashboard UI
+
+Dashboard là web tĩnh, đọc dữ liệu SQLite cục bộ.
+
+1) Mở server tĩnh (khuyến nghị):
+
+```bash
+cd dashboard-ui
+python -m http.server 5173
+```
+
+Sau đó mở `http://127.0.0.1:5173` và chọn file DB từ máy.
+
+Nếu không có Python, có thể dùng:
+
+```bash
+cd dashboard-ui
+npx serve . -l 5173
+```
+
+2) Tên DB mặc định theo cấu hình `db_path` của storage. Xem thêm tại [src/storage/mod.rs](src/storage/mod.rs).
+
+## Luồng mô phỏng
+
+[src/main.rs](src/main.rs) khởi tạo 2 tài sản (ETH, USDC), tạo 2 user (Safe và Risky), sau đó giá ETH giảm để kích hoạt cảnh báo thanh lý.
+
+## Tài liệu bổ sung
+
+- Diagram PlantUML: xem [docs/README.md](docs/README.md)
+- Hướng dẫn storage: xem [STORAGE_QUICKSTART.md](STORAGE_QUICKSTART.md)
+
+## Gợi ý phát triển tiếp
+
+- Bổ sung API truy vấn danh sách mục tiêu thanh lý.
+- Kết nối executor để thực thi thanh lý thật trên fork.
+- Bổ sung test tích hợp cho toàn bộ pipeline.
