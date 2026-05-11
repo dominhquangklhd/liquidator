@@ -150,17 +150,8 @@ npx serve . -l 5173
 
 2) Tên DB mặc định theo cấu hình `db_path` của storage. Xem thêm tại [src/storage/mod.rs](src/storage/mod.rs).
 
-## Luồng mô phỏng
-
-[src/main.rs](src/main.rs) khởi tạo 2 tài sản (ETH, USDC), tạo 2 user (Safe và Risky), sau đó giá ETH giảm để kích hoạt cảnh báo thanh lý.
-
 ## Tài liệu bổ sung
 
 - Diagram PlantUML: xem [docs/README.md](docs/README.md)
 - Hướng dẫn storage: xem [STORAGE_QUICKSTART.md](STORAGE_QUICKSTART.md)
 
-## Gợi ý phát triển tiếp
-
-- Bổ sung API truy vấn danh sách mục tiêu thanh lý.
-- Kết nối executor để thực thi thanh lý thật trên fork.
-- Bổ sung test tích hợp cho toàn bộ pipeline.
