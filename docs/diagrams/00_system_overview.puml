@@ -1,0 +1,79 @@
+@startuml System Overview - Architecture Diagram
+
+skinparam backgroundColor #FAFAFA
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam packageStyle rectangle
+skinparam component {
+    BackgroundColor #EAF1FB
+    BorderColor #5B7DBB
+    ArrowColor #5B7DBB
+}
+skinparam package {
+    BackgroundColor #FFFFFF
+    BorderColor #BDBDBD
+}
+skinparam database {
+    BackgroundColor #FFF7E6
+    BorderColor #D39B2A
+}
+
+title <b>Kiến trúc tổng thể của Hệ thống Thanh lý</b>\n(Event-Driven)
+
+top to bottom direction
+
+cloud "Mạng lưới Blockchain\n(Ethereum / Local Fork)" as Chain
+cloud "Aave Subgraph\n(GraphQL)" as Subgraph
+
+together {
+    package "Bootstrap Module" as BootPkg {
+        component "Bootstrapper\n(On-chain + subgraph)" as Boot
+    }
+
+    package "Event Ingestion & Routing" as Ingest {
+        component "RPC Provider\n(Lắng nghe RPC/WSS)" as Rpc
+        component "Oracle Manager\n(Cập nhật giá)" as OracleMgr
+        queue "Event Dispatcher\n(MPSC Channels)" as Dispatcher
+    }
+}
+
+together {
+    package "Core Processing Pipeline" as Core {
+        component "Risk Engine\n(Đánh giá Health Factor)" as Risk
+        component "Profit Calculator\n(Tính phí Gas, Lợi nhuận)" as Profit
+        component "Strategy Decider\n(Quyết định Direct / Skip)" as Strategy
+    }
+
+    package "Execution & Persistence" as ExecPkg {
+        component "Liquidation Executor\n(Tx, Gửi Broadcast)" as Exec
+        database "Storage Layer\n(Lưu trữ thông tin)" as Store
+    }
+}
+
+Chain -[hidden]right-> Subgraph
+Chain -[hidden]down-> BootPkg
+Subgraph -[hidden]down-> Ingest
+BootPkg -[hidden]right-> Ingest
+BootPkg -[hidden]down-> Core
+Ingest -[hidden]down-> ExecPkg
+Core -[hidden]right-> ExecPkg
+
+Chain --> Rpc : RPC/WSS
+Chain --> OracleMgr : Price feeds
+Rpc --> Dispatcher : Sự kiện block/Aave
+OracleMgr --> Dispatcher : Sự kiện giá mới
+
+Dispatcher --> Risk : Event stream
+Risk --> Profit : Tài khoản có HF < 1.0
+Profit --> Strategy : Biên lợi nhuận
+Strategy --> Exec : Execution plan
+
+Exec --> Chain : Liquidation tx
+Exec --> Store : Log/kết quả
+
+Boot --> Chain : Đọc trạng thái
+Boot --> Subgraph : Đọc users
+Boot --> Risk : Seed vị thế
+Boot --> Store : Snapshot
+
+@enduml
