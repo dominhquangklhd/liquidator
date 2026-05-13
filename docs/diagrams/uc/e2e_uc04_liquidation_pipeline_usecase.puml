@@ -16,28 +16,17 @@ rectangle "UC04: Thực thi chiến dịch thanh lý trọn gói" {
 
     usecase "Thực thi chiến dịch thanh lý trọn gói" as UC04
 
-    usecase "Tính toán lợi nhuận thuần\nsau phí mạng và trượt giá" as Sub1
-    usecase "Tìm kiếm đường dẫn\nflash loan tối ưu" as Sub2
+    usecase "Kiểm tra điều kiện\nthanh lý (HF < 1.0)" as Sub1
     usecase "Mã hóa và ký duyệt\ngiao dịch thanh lý" as Sub3
     usecase "Gửi giao dịch và\ntheo dõi trạng thái" as Sub4
     usecase "Ghi nhận lịch sử\nvào cơ sở dữ liệu" as Sub5
-
-    usecase "Hủy tiến trình do\nlợi nhuận không đảm bảo" as Ext1
-    usecase "Tăng phí mạng để\ngiải phóng giao dịch ách tắc" as Ext2
-    usecase "Ghi nhật ký khi\ngiao dịch bị từ chối" as Ext3
 }
 
 RPC --> Sub4 : "Tiếp nhận giao dịch\nvào vùng chờ (Mempool)"
 
 UC04 ..> Sub1 : <<include>>
-UC04 ..> Sub2 : <<include>>
 UC04 ..> Sub3 : <<include>>
 UC04 ..> Sub4 : <<include>>
 UC04 ..> Sub5 : <<include>>
-
-Ext1 .up.> Sub1 : <<extend>>\nNếu lợi nhuận <= 0
-Sub2 .up.> Sub1 : <<include>>\nNếu lợi nhuận đạt ngưỡng
-Ext2 .up.> Sub4 : <<extend>>\nNếu giao dịch ách tắc\nquá lâu trong Mempool
-Ext3 .up.> Sub4 : <<extend>>\nNếu mạng lưới\ntừ chối giao dịch
 
 @enduml

@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use anyhow::Result;
+use dashmap::DashMap;
 use ethers::contract::abigen;
 use ethers::providers::{Http, Provider};
 use ethers::types::{Address, H160, U256};
@@ -10,10 +11,11 @@ use reqwest::Client;
 use serde_json::{json, Value};
 
 use crate::aave_v3::reader::AaveV3Reader;
-use crate::data::asset::Asset;
-use crate::data::user::User;
+use crate::data::asset::{Asset, AssetId};
+use crate::data::registry::Registry;
+use crate::data::user::{User, UserId};
 use crate::risk::bucket::RiskBucket;
-use crate::risk::engine::{RiskEngine, RiskEngineConfig};
+use crate::risk::engine::RiskEngineConfig;
 use crate::storage::{HybridStorage, LiquidationTarget};
 
 // Bootstrap configuration constants
@@ -47,7 +49,9 @@ abigen!(
 );
 
 pub async fn bootstrap_onchain_state(
-    engine: &mut RiskEngine,
+    users: Arc<DashMap<UserId, User>>,
+    assets: Arc<DashMap<AssetId, Asset>>,
+    registry: Arc<Registry>,
     storage: Arc<HybridStorage>,
     rpc: Arc<Provider<Http>>,
     chain_id: u64,
@@ -167,7 +171,7 @@ pub async fn bootstrap_onchain_state(
         } else {
             18
         };
-        engine.assets.insert(
+        assets.insert(
             symbol.to_string(),
             Asset {
                 id: symbol.to_string(),
@@ -183,8 +187,8 @@ pub async fn bootstrap_onchain_state(
     }
 
     // Alias ETH for oracle price updates (Oracle emits ETH while Aave reserve is WETH).
-    if !engine.assets.contains_key("ETH") {
-        engine.assets.insert(
+    if !assets.contains_key("ETH") {
+        assets.insert(
             "ETH".to_string(),
             Asset {
                 id: "ETH".to_string(),
@@ -242,7 +246,7 @@ pub async fn bootstrap_onchain_state(
 
         // Overwrite hardcoded LTV/LT with real on-chain values from ProtocolDataProvider
         for reserve in aave_reader.reserves() {
-            if let Some(mut asset) = engine.assets.get_mut(&reserve.symbol) {
+            if let Some(mut asset) = assets.get_mut(&reserve.symbol) {
                 asset.ltv = reserve.ltv;
                 asset.liquidation_threshold = reserve.liquidation_threshold;
                 asset.decimals = reserve.decimals;
@@ -302,7 +306,7 @@ pub async fn bootstrap_onchain_state(
                     // ── Skip user if any token is unsupported by the system ──
                     let unsupported: Vec<&String> = user.collateral.keys()
                         .chain(user.debt.keys())
-                        .filter(|sym| !engine.assets.contains_key(sym.as_str()))
+                        .filter(|sym| !assets.contains_key(sym.as_str()))
                         .collect();
 
                     if !unsupported.is_empty() {
@@ -439,23 +443,17 @@ pub async fn bootstrap_onchain_state(
         // Register user for ALL their actual collateral and debt assets
         // so price updates on any relevant asset trigger HF recalculation.
         for asset_sym in user.collateral.keys() {
-            engine
-                .registry
-                .add_user_to_asset(asset_sym.clone(), user_id.clone());
+            registry.add_user_to_asset(asset_sym.clone(), user_id.clone());
             // WETH users also tracked under ETH for oracle compatibility
             if asset_sym == "WETH" {
-                engine
-                    .registry
-                    .add_user_to_asset("ETH".to_string(), user_id.clone());
+                registry.add_user_to_asset("ETH".to_string(), user_id.clone());
             }
         }
         for asset_sym in user.debt.keys() {
-            engine
-                .registry
-                .add_user_to_asset(asset_sym.clone(), user_id.clone());
+            registry.add_user_to_asset(asset_sym.clone(), user_id.clone());
         }
 
-        engine.users.insert(user_id.clone(), user);
+        users.insert(user_id.clone(), user);
 
         // Only insert into hot cache (in-memory); DB persistence is done in
         // a single batch below via persist_targets_to_db to avoid double writes.

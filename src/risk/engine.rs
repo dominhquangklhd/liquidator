@@ -110,11 +110,16 @@ impl RiskEngine {
         self.assets.clear();
         self.registry.clear();
         
+        let users = Arc::clone(&self.users);
+        let assets = Arc::clone(&self.assets);
+        let registry = Arc::clone(&self.registry);
         let storage = Arc::clone(&self.storage);
         let config = self.config.clone();
         
         if let Err(e) = crate::bootstrap::onchain::bootstrap_onchain_state(
-            self,
+            users,
+            assets,
+            registry,
             storage,
             provider,
             chain_id,

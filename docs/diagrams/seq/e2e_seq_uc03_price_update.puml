@@ -3,43 +3,40 @@ title UC03: Phản hồi sự kiện cập nhật biến động giá
 
 actor "RPC Provider" as RPC
 participant "Oracle Manager" as Oracle
-participant "Event Dispatcher" as DP
+participant "Event Dispatcher" as Dispatcher
+participant "Risk Engine" as Risk
 participant "Storage Layer" as Storage
-participant "Risk Engine" as RE
-participant "Luồng thanh lý" as Pipeline
 
-== Lắng nghe biến động giá ==
-RPC -> Oracle: Sự kiện từ mạng lưới phân phối giá
-activate Oracle
-Oracle -> DP: Chuyển phát sự kiện cập nhật giá tài sản mới
-activate DP
-deactivate Oracle
+== Nhận cập nhật giá ==
+RPC -> Oracle: Cập nhật giá từ mạng lưới
+Oracle -> Dispatcher: Phát sự kiện giá mới
+activate Dispatcher
+Dispatcher -> Risk: Chuyển sự kiện giá
+deactivate Dispatcher
 
-== Cập nhật dữ liệu và lấy thông tin đối chiếu ==
-DP -> Storage: Lưu lượng giá mới của tài sản
-activate Storage
-Storage -> Storage: Cập nhật đè lên cơ sở dữ liệu
-Storage -> Storage: Truy vấn các ví lưu trữ tài sản này
-Storage --> DP: Trả về danh sách ví bị tác động
-deactivate Storage
+== Tính lại rủi ro theo giá ==
+activate Risk
+Risk -> Risk: Kiểm tra dữ liệu giá và phạm vi tài sản theo dõi
+alt Dữ liệu giá không hợp lệ
+    Risk -> Risk: Bỏ qua sự kiện
+else Dữ liệu giá hợp lệ
+    Risk -> Risk: Cập nhật bảng giá nội bộ
+    Risk -> Risk: Xác định các vị thế bị ảnh hưởng
 
-== Quét rủi ro hàng loạt ==
-loop Cho mỗi ví trong danh sách
-    DP -> RE: Gửi yêu cầu tính toán lại hệ số sức khỏe
-    activate RE
-    RE -> RE: Cập nhật và tính toán rủi ro theo giá
-    
-    alt Hệ số sức khỏe < 1.0
-        RE -> DP: Phát tín hiệu thanh lý
-        DP -> Pipeline: <<include>> Chuyển mục tiêu sang luồng tương ứng
-    else Hệ số sức khỏe >= 1.0
-        RE -> Storage: Lưu trạng thái sức khỏe định danh an toàn
-        activate Storage
-        Storage --> RE: Hoàn thành cập nhật
-        deactivate Storage
+    alt Không có vị thế bị ảnh hưởng
+        Risk -> Risk: Kết thúc xử lý
+    else Có vị thế bị ảnh hưởng
+        Risk -> Risk: Tính lại hệ số sức khỏe
+
+        alt Hệ số sức khỏe dưới ngưỡng theo dõi
+            Risk -> Storage: Cập nhật Liquidation Target
+            activate Storage
+            Storage -> Storage: Ghi vào hot cache và chuẩn bị đồng bộ nền
+            deactivate Storage
+        else Hệ số sức khỏe an toàn
+            Risk -> Risk: Kết thúc xử lý
+        end
     end
-    deactivate RE
 end
-
-deactivate DP
+deactivate Risk
 @enduml

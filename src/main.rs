@@ -28,7 +28,7 @@ use crate::oracle::worker::{
 use crate::profit::{ProfitCalculator, ProfitConfig, GasEstimator};
 use crate::strategy::{StrategyDecider, StrategyConfig};
 use crate::storage::HybridStorage;
-use crate::storage::sync::{stats_logger_worker, memory_monitor_worker};
+use crate::storage::sync::{snapshot_worker, stats_logger_worker, memory_monitor_worker};
 use crate::executor::{LiquidationExecutor, ExecutorConfig, WorkerConfig};
 use crate::executor::worker::{executor_worker, stats_worker, nonce_sync_worker};
 use crate::bootstrap::onchain::bootstrap_onchain_state;
@@ -127,6 +127,13 @@ async fn main() {
     // Spawn background sync worker: flushes hot cache -> SQLite every 5s
     let _sync_handle = Arc::clone(&storage).spawn_sync_worker();
 
+    // Spawn historical snapshot worker: writes hf_history periodically.
+    let storage_snapshot_interval_secs = env_u64("STORAGE_SNAPSHOT_INTERVAL_SECS", 60);
+    let storage_for_snapshot = Arc::clone(&storage);
+    tokio::spawn(async move {
+        snapshot_worker(storage_for_snapshot, storage_snapshot_interval_secs).await;
+    });
+
     // Storage observability workers
     let storage_stats_interval_secs = env_u64("STORAGE_STATS_INTERVAL_SECS", 30);
     let storage_for_stats = Arc::clone(&storage);
@@ -159,6 +166,10 @@ async fn main() {
         risk_config.clone(),
     );
 
+    let engine_users = Arc::clone(&engine.users);
+    let engine_assets = Arc::clone(&engine.assets);
+    let engine_registry = Arc::clone(&engine.registry);
+
     let aave_pool_address = env_string(
         "AAVE_POOL_ADDRESS",
         "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2",
@@ -180,32 +191,11 @@ async fn main() {
     .parse()
     .expect("Invalid Aave PoolAddressesProvider address");
 
-    if let Err(e) = bootstrap_onchain_state(
-        &mut engine,
-        Arc::clone(&storage),
-        provider.provider(),
-        provider.chain_id(),
-        aave_pool_address,
-        aave_oracle_address,
-        aave_addresses_provider,
-        &risk_config,
-    )
-    .await
-    {
-        tracing::warn!("On-chain bootstrap failed: {:?}", e);
-    }
-
     // ============================================================================
-    // PHASE 5: SPAWN BACKGROUND WORKERS
+    // PHASE 4: START EVENT LISTENERS
     // ============================================================================
-    
-    // 5.1 Risk Engine Worker
-    // Chạy event loop để xử lý tất cả incoming events
-    let _engine_handle = tokio::spawn(async move {
-        engine.run().await;
-    });
 
-    // 5.2 Block Watcher Worker
+    // 4.1 Block Watcher Worker
     // Theo dõi các blocks mới trên blockchain
     let provider_for_blocks = Arc::clone(&provider);
     let tx_for_blocks = tx.clone();
@@ -215,7 +205,7 @@ async fn main() {
         }
     });
 
-    // 5.3 Aave Event Watcher Worker
+    // 4.2 Aave Event Watcher Worker
     // Theo dõi các events từ Aave Pool contract:
     // - Supply (deposit collateral)
     // - Borrow (vay)
@@ -260,7 +250,7 @@ async fn main() {
     });
 
     // ============================================================================
-    // PHASE 6: ORACLE PRICE FEEDS
+    // PHASE 5: ORACLE PRICE FEEDS
     // ============================================================================
     
     // Khởi tạo Oracle module — theo dõi giá realtime từ Chainlink
@@ -502,7 +492,37 @@ async fn main() {
     }
 
     // ============================================================================
-    // PHASE 7: KEEP SYSTEM ALIVE — wait for Ctrl+C
+    // PHASE 6: START RISK ENGINE WORKER
+    // ============================================================================
+
+    // Chạy event loop để xử lý tất cả incoming events
+    let _engine_handle = tokio::spawn(async move {
+        engine.run().await;
+    });
+
+    // ============================================================================
+    // PHASE 7: BOOTSTRAP ON-CHAIN STATE (AFTER LISTENERS)
+    // ============================================================================
+
+    if let Err(e) = bootstrap_onchain_state(
+        Arc::clone(&engine_users),
+        Arc::clone(&engine_assets),
+        Arc::clone(&engine_registry),
+        Arc::clone(&storage),
+        provider.provider(),
+        provider.chain_id(),
+        aave_pool_address,
+        aave_oracle_address,
+        aave_addresses_provider,
+        &risk_config,
+    )
+    .await
+    {
+        tracing::warn!("On-chain bootstrap failed: {:?}", e);
+    }
+
+    // ============================================================================
+    // PHASE 8: KEEP SYSTEM ALIVE — wait for Ctrl+C
     // ============================================================================
 
     tracing::info!("✓ All workers running. Press Ctrl+C to stop.");

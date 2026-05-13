@@ -1,0 +1,74 @@
+@startuml System Overview - Activity Diagram
+
+skinparam backgroundColor #FAFAFA
+skinparam shadowing false
+skinparam activity {
+    BackgroundColor #E8F4F8
+    BorderColor #0066CC
+    ArrowColor #0066CC
+    FontColor #333333
+}
+skinparam partition {
+    BackgroundColor #FFFFFF
+    BorderColor #CCCCCC
+    FontColor #333333
+}
+skinparam arrow {
+    Color #0066CC
+}
+
+title <b>Hệ thống Thanh lý - Luồng xử lý tổng quan</b>
+
+left to right direction
+
+start
+:Khởi động hệ thống;
+
+fork
+    partition "Giám sát & Cập nhật" {
+        :RPC Provider\nTheo dõi sự kiện;
+    }
+fork again
+    partition "Định giá" {
+        :Oracle Manager\nCập nhật giá;
+    }
+endfork
+
+partition "Khởi tạo" {
+    :Nạp trạng thái blockchain;
+    :Đưa user vào Storage Layer;
+}
+
+partition "Định tuyến" {
+    :Event Dispatcher\nPhân phối sự kiện;
+}
+
+partition "Phân tích Rủi ro" {
+    :Risk Engine\nTính toán chỉ số sức khoẻ;
+    :Bỏ qua sự kiện\nkhông có user;
+    :Xác định người dùng có thể thanh lý;
+}
+
+partition "Lưu trữ" {
+    :Storage Layer\nGhi nhận các mục tiêu;
+}
+
+partition "Thực thi" {
+    repeat
+        :Liquidation Executor\nKiểm tra các mục tiêu;
+        
+        if (Có cơ hội\nthanh lý?) then (Có)
+            :Profit Calculator\nLàm sạch các mục tiêu\nkhông có lợi;
+            :Strategy Decider\nÁp dụng chiến lược;
+            :Thực hiện thanh lý\ntrên blockchain;
+            :Ghi kết quả;
+        else (Không)
+            :Chờ cơ hội kế tiếp;
+        endif
+    repeat while (Hệ thống hoạt động?)
+}
+
+:Kết thúc;
+stop
+
+@enduml

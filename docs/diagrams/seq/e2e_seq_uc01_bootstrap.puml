@@ -1,5 +1,4 @@
-@startuml
-title UC01: Khởi động và đồng bộ dữ liệu hệ thống (Bootstrap)
+﻿@startuml
 
 actor "Admin" as Admin
 participant "Bootstrap Module" as Boot
@@ -23,7 +22,7 @@ Graph --> Boot: Trả về danh sách ví ưu tiên
 deactivate Graph
 
 opt Dữ liệu rỗng hoặc lỗi
-    Boot -> Storage: Tải danh sách ví dự phòng từ CSDL
+    Boot -> Storage: Tải danh sách ví dự phòng từ Cơ sở dữ liệu
     Storage --> Boot: Danh sách ví
 end
 
@@ -33,7 +32,7 @@ loop Xử lý từng ví trong danh sách
     RPC --> Boot: Trả về khối lượng thế chấp,\ndư nợ và HF cơ bản
     deactivate RPC
 
-    Boot -> RPC: Đọc chi tiết số dư từng tài sản\n(thông qua AaveV3Reader)
+    Boot -> RPC: Đọc chi tiết số dư từng tài sản
     activate RPC
     RPC --> Boot: Trả về số dư collateral và debt\ncho từng reserve
     deactivate RPC
@@ -41,7 +40,7 @@ loop Xử lý từng ví trong danh sách
     Boot -> Boot: Kiểm tra drift dữ liệu và\nloại bỏ ví chứa tài sản không hỗ trợ
 end
 
-Boot -> Boot: Chuẩn hóa và gán rủi ro ban đầu (Risk Score, Bucket)
+Boot -> Boot: Chuẩn hóa và gán rủi ro ban đầu
 
 Boot -> Storage: Lưu batch toàn bộ vị thế\nvào SQLite và Hot Cache
 activate Storage

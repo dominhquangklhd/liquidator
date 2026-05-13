@@ -50,7 +50,7 @@ together {
     }
 }
 
-Chain -[hidden]right-> Subgraph
+Chain <--> Subgraph
 Chain -[hidden]down-> BootPkg
 Subgraph -[hidden]down-> Ingest
 BootPkg -[hidden]right-> Ingest
@@ -59,7 +59,7 @@ Ingest -[hidden]down-> ExecPkg
 Core -[hidden]right-> ExecPkg
 
 Chain --> Rpc : RPC/WSS
-Chain --> OracleMgr : Price feeds
+Subgraph --> OracleMgr : Price feeds
 Rpc --> Dispatcher : Sự kiện block/Aave
 OracleMgr --> Dispatcher : Sự kiện giá mới
 
@@ -70,10 +70,10 @@ Strategy --> Exec : Execution plan
 
 Exec --> Chain : Liquidation tx
 Exec --> Store : Log/kết quả
+Core --> Store : Snapshot
 
 Boot --> Chain : Đọc trạng thái
 Boot --> Subgraph : Đọc users
 Boot --> Risk : Seed vị thế
-Boot --> Store : Snapshot
 
 @enduml

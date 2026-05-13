@@ -2,42 +2,34 @@
 title UC02: Phản hồi sự kiện vị thế của người dùng
 
 actor "RPC Provider" as RPC
-participant "Event Dispatcher" as DP
+participant "Event Dispatcher" as Dispatcher
+participant "Risk Engine" as Risk
 participant "Storage Layer" as Storage
-participant "Risk Engine" as RE
-participant "Luồng thanh lý" as Pipeline
 
-== Lắng nghe và giải mã sự kiện ==
-RPC -> DP: Phát sự kiện từ mạng lưới
-activate DP
-
-DP -> DP: Lọc sự kiện rác và giải mã
-
-== Cập nhật khối lượng và số dư ==
-DP -> Storage: Phân phối sự kiện biến động của ví
-activate Storage
-Storage -> Storage: Cập nhật cơ sở dữ liệu
-Storage --> DP: Trả về trạng thái vị thế mới nhất
-deactivate Storage
+== Tiếp nhận sự kiện vị thế ==
+RPC -> Dispatcher: Phát sự kiện biến động vị thế
+activate Dispatcher
+Dispatcher -> Risk: Chuyển sự kiện vị thế
+deactivate Dispatcher
 
 == Đánh giá rủi ro ==
-DP -> RE: Gửi yêu cầu tính toán lại cho ví bị ảnh hưởng
-activate RE
-RE -> RE: Truy xuất thông tin và giá từ hệ thống
-RE -> RE: Tính toán lại hệ số sức khỏe
+activate Risk
+Risk -> Risk: Kiểm tra dữ liệu sự kiện và điều kiện theo dõi
+alt Không hợp lệ
+    Risk -> Risk: Bỏ qua sự kiện
+else Hợp lệ
+    Risk -> Risk: Cập nhật vị thế trong bộ nhớ
+    Risk -> Risk: Tính lại hệ số sức khỏe và phân loại rủi ro
 
-alt Hệ số sức khỏe < 1.0
-    RE -> DP: Phát thông báo phát hiện mục tiêu thanh lý
-    DP -> Pipeline: <<include>> Chuyển mục tiêu sang luồng thanh lý
-    note right of Pipeline: Bắt đầu chiến dịch thanh lý
-else Hệ số sức khỏe >= 1.0
-    RE -> Storage: Ghi nhận mức độ an toàn
-    activate Storage
-    Storage --> RE: Hoàn tất cập nhật
-    deactivate Storage
-    RE --> DP: Đánh giá hoàn tất
+    alt Hệ số sức khỏe dưới ngưỡng theo dõi
+        Risk -> Storage: Cập nhật Liquidation Target
+        activate Storage
+        Storage -> Storage: Ghi vào hot cache và chuẩn bị đồng bộ nền
+        deactivate Storage
+    else Hệ số sức khỏe an toàn
+        Risk -> Risk: Kết thúc xử lý
+    end
 end
-deactivate RE
+deactivate Risk
 
-deactivate DP
 @enduml
