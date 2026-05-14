@@ -474,6 +474,10 @@ fn should_trip_circuit_breaker(error: &str) -> bool {
 
 fn should_drop_target_after_failure(error: &str) -> bool {
     let err = error.to_ascii_lowercase();
+    if err.contains("receipt not found") || err.contains("transaction error:") {
+        return true;
+    }
+
     err.contains("preflight failed:") && err.contains("health factor") && err.contains(">= 1.0")
 }
 
