@@ -1,5 +1,4 @@
 ﻿@startuml
-title UC04: Chiến dịch thực thi thanh lý trọn gói
 
 participant "Storage Layer" as Storage
 participant "Profit Calculator" as Profit
@@ -45,5 +44,7 @@ loop Theo từng mục tiêu được chọn
     else Giao dịch thất bại
         Executor -> Storage: Lưu lỗi và thông tin phục vụ theo dõi
     end
+    
+    Executor -> Storage: Bỏ user đó khỏi Hot Cache
 end
 deactivate Executor

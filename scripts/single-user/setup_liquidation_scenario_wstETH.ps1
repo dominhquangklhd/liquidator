@@ -327,7 +327,7 @@ Write-Host "  [OK] Da seed wstETH cho 20 accounts" -ForegroundColor Green
 # ============================================================================
 # STEP 1: Approve + Supply wstETH collateral
 # ============================================================================
-Write-Step "1/8" "Approve + Supply wstETH collateral"
+Write-Step "1/7" "Approve + Supply wstETH collateral"
 
 $maxApproval = "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 $result = Invoke-CastSend "$WSTETH `"approve(address,uint256)`" $AAVE_POOL $maxApproval --private-key $BORROWER_KEY"
@@ -359,7 +359,7 @@ Write-AccountData $accountData
 # ============================================================================
 # STEP 2: Borrow USDC de day HF sat 1.0
 # ============================================================================
-Write-Step "2/8" "Borrow USDC"
+Write-Step "2/7" "Borrow USDC"
 
 $poolUsdcRaw = Invoke-CastCall "$USDC `"balanceOf(address)(uint256)`" $aUSDC"
 $poolUsdcNow = [decimal](Strip-CastAnnotation $poolUsdcRaw)
@@ -400,7 +400,7 @@ Write-AccountData $accountData
 # ============================================================================
 # STEP 3: Vay them de day HF sat 1.0
 # ============================================================================
-Write-Step "3/8" "Vay them USDC de day HF sat 1.0"
+Write-Step "3/7" "Vay them USDC de day HF sat 1.0"
 
 $totalBorrowedUSD = $borrowAmountUSD
 for ($i = 1; $i -le 5; $i++) {
@@ -455,7 +455,7 @@ $finalHF = Get-HealthFactor $accountData
 # STEP 4: Rut bot collateral de day HF xuong sat 1.0
 # ============================================================================
 if ($finalHF -gt 1.10) {
-    Write-Step "4/8" "Rut bot wstETH collateral de day HF xuong ~1.03"
+    Write-Step "4/7" "Rut bot wstETH collateral de day HF xuong ~1.03"
 
     $targetHF = 1.03
     for ($w = 1; $w -le 8; $w++) {
@@ -521,7 +521,7 @@ if ($finalHF -gt 1.10) {
 # ============================================================================
 # STEP 5: Fund liquidator USDC
 # ============================================================================
-Write-Step "5/8" "Fund liquidator USDC"
+Write-Step "5/7" "Fund liquidator USDC"
 
 Write-Host "  [>] Setting USDC balance (slot $USDC_BALANCE_SLOT)..." -ForegroundColor Gray
 $balanceSlot = Invoke-Expression "cast index address $LIQUIDATOR $USDC_BALANCE_SLOT" 2>&1
@@ -547,7 +547,7 @@ if ($null -ne $result) {
 # ============================================================================
 # STEP 6: Snapshot
 # ============================================================================
-Write-Step "6/8" "Tao snapshot"
+Write-Step "6/7" "Tao snapshot"
 
 $snapshotId = Invoke-CastRpc "evm_snapshot"
 if ([string]::IsNullOrWhiteSpace($snapshotId) -or $snapshotId -match '^Error') {
@@ -560,7 +560,7 @@ if ([string]::IsNullOrWhiteSpace($snapshotId) -or $snapshotId -match '^Error') {
 # ============================================================================
 # STEP 7: Summary
 # ============================================================================
-Write-Step "7/8" "Summary"
+Write-Step "7/7" "Summary"
 
 $neededDrop = [math]::Round((1 - 1.0 / $finalHF) * 100, 0)
 if ($neededDrop -lt 1) { $neededDrop = 1 }
