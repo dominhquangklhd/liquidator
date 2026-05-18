@@ -121,6 +121,15 @@ impl ProfitConfig {
             .copied()
             .unwrap_or(self.default_bonus_pct)
     }
+
+    /// Override liquidation bonus map using on-chain values.
+    pub fn apply_onchain_liquidation_bonus(&mut self, bonuses: &HashMap<String, f64>) {
+        for (asset, bonus_pct) in bonuses {
+            if *bonus_pct > 0.0 {
+                self.liquidation_bonus.insert(asset.clone(), *bonus_pct);
+            }
+        }
+    }
     
     /// Kiểm tra asset có phải stablecoin không
     pub fn is_stablecoin(&self, asset_id: &str) -> bool {

@@ -11,10 +11,12 @@ mod strategy;
 mod bootstrap;
 
 use tokio::sync::mpsc;
-use std::sync::Arc;
 use std::path::Path;
+use std::sync::Arc;
+
 use ethers::providers::Middleware;
 use ethers::types::U256;
+use crate::aave_v3::bonus::fetch_liquidation_bonus_map;
 use crate::risk::engine::{RiskEngine, RiskEngineConfig};
 use crate::events::event::Event;
 use crate::provider::AaveProvider;
@@ -317,6 +319,28 @@ async fn main() {
             
             // ── Khởi tạo Profit Calculator (sử dụng oracle price cache) ──
             let mut profit_config = ProfitConfig::local_fork(); // Dùng local_fork() cho Anvil
+            match fetch_liquidation_bonus_map(
+                provider.provider(),
+                aave_pool_address,
+                aave_addresses_provider,
+                provider.chain_id(),
+            )
+            .await
+            {
+                Ok(onchain_bonus) => {
+                    profit_config.apply_onchain_liquidation_bonus(&onchain_bonus);
+                    tracing::info!(
+                        "✓ Loaded on-chain liquidation bonus for {} assets",
+                        onchain_bonus.len()
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to load on-chain liquidation bonus: {:?}. Using defaults.",
+                        e
+                    );
+                }
+            }
             profit_config.min_profit_usd = env_f64("PROFIT_MIN_USD", profit_config.min_profit_usd);
             profit_config.min_roi_pct = env_f64("PROFIT_MIN_ROI_PCT", profit_config.min_roi_pct);
             profit_config.fallback_gas_price_gwei = env_f64(

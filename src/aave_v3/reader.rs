@@ -38,6 +38,8 @@ pub struct ReserveInfo {
     pub decimals: u8,
     pub ltv: f64,
     pub liquidation_threshold: f64,
+    /// Liquidation bonus (%), e.g. 5.0 means 5% bonus
+    pub liquidation_bonus_pct: f64,
     pub a_token: Address,
     pub stable_debt_token: Address,
     pub variable_debt_token: Address,
@@ -148,10 +150,16 @@ impl<M: Middleware + 'static> AaveV3Reader<M> {
             let decimals = config.0.as_u32() as u8;
             let ltv = u256_to_f64(config.1) / 10_000.0;                // basis points -> ratio
             let liquidation_threshold = u256_to_f64(config.2) / 10_000.0; // basis points -> ratio
+            let liquidation_bonus_bps = u256_to_f64(config.3);
+            let liquidation_bonus_pct = if liquidation_bonus_bps > 10_000.0 {
+                (liquidation_bonus_bps - 10_000.0) / 100.0
+            } else {
+                0.0
+            };
 
             tracing::debug!(
-                "Reserve {}: decimals={}, ltv={:.4}, lt={:.4}",
-                symbol, decimals, ltv, liquidation_threshold
+                "Reserve {}: decimals={}, ltv={:.4}, lt={:.4}, bonus={:.2}%",
+                symbol, decimals, ltv, liquidation_threshold, liquidation_bonus_pct
             );
 
             addr_map.insert(asset, symbol.clone());
@@ -162,6 +170,7 @@ impl<M: Middleware + 'static> AaveV3Reader<M> {
                 decimals,
                 ltv,
                 liquidation_threshold,
+                liquidation_bonus_pct,
                 a_token: tokens.0,
                 stable_debt_token: tokens.1,
                 variable_debt_token: tokens.2,
