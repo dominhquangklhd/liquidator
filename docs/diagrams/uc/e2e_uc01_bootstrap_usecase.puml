@@ -1,4 +1,4 @@
-@startuml
+﻿@startuml
 skinparam packageStyle rectangle
 skinparam backgroundColor #FFFFFF
 skinparam usecase {
@@ -11,8 +11,8 @@ skinparam usecase {
 left to right direction
 
 actor "Quản trị viên" as Admin
-actor "The Graph" as Graph
-actor "RPC Provider" as RPC
+actor "Dịch vụ lập chỉ mục" as Graph
+actor "Nhà cung cấp RPC" as RPC
 
 rectangle "UC01: Khởi động và đồng bộ dữ liệu hệ thống (Bootstrap)" {
 

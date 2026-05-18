@@ -1,10 +1,11 @@
 ﻿@startuml
+hide footbox
 title UC02: Phản hồi sự kiện vị thế của người dùng
 
-actor "RPC Provider" as RPC
-participant "Event Dispatcher" as Dispatcher
-participant "Risk Engine" as Risk
-participant "Storage Layer" as Storage
+participant "RPC Provider" as RPC
+control "Event Dispatcher" as Dispatcher
+control "Risk Engine" as Risk
+database "Storage Layer" as Storage
 
 == Tiếp nhận sự kiện vị thế ==
 RPC -> Dispatcher: Phát sự kiện biến động vị thế

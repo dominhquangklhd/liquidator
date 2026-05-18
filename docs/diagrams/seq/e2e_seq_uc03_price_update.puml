@@ -1,11 +1,12 @@
 ﻿@startuml
+hide footbox
 title UC03: Phản hồi sự kiện cập nhật biến động giá
 
-actor "RPC Provider" as RPC
-participant "Oracle Manager" as Oracle
-participant "Event Dispatcher" as Dispatcher
-participant "Risk Engine" as Risk
-participant "Storage Layer" as Storage
+participant "RPC Provider" as RPC
+control "Oracle Manager" as Oracle
+control "Event Dispatcher" as Dispatcher
+control "Risk Engine" as Risk
+database "Storage Layer" as Storage
 
 == Nhận cập nhật giá ==
 RPC -> Oracle: Cập nhật giá từ mạng lưới
@@ -39,4 +40,5 @@ else Dữ liệu giá hợp lệ
     end
 end
 deactivate Risk
+
 @enduml

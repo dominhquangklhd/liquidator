@@ -1,14 +1,16 @@
 ﻿@startuml
+hide footbox
+title UC04: Thực thi chiến dịch thanh lý
 
-participant "Storage Layer" as Storage
-participant "Profit Calculator" as Profit
-participant "Strategy Decider" as Strategy
-participant "Liquidation Executor" as Executor
-actor "RPC Provider" as RPC
+database "Storage Layer" as Storage
+control "Profit Calculator" as Profit
+control "Strategy Decider" as Strategy
+control "Liquidation Executor" as Executor
+participant "RPC Provider" as RPC
 
 == Lấy mục tiêu thanh lý ==
-Executor -> Storage: Nhận danh sách mục tiêu cần xem xét
 activate Executor
+Executor -> Storage: Nhận danh sách mục tiêu cần xem xét
 Storage --> Executor: Danh sách mục tiêu
 Executor -> Executor: Lọc mục tiêu còn đủ điều kiện thanh lý
 
@@ -44,7 +46,9 @@ loop Theo từng mục tiêu được chọn
     else Giao dịch thất bại
         Executor -> Storage: Lưu lỗi và thông tin phục vụ theo dõi
     end
-    
-    Executor -> Storage: Bỏ user đó khỏi Hot Cache
+
+    Executor -> Storage: Xóa người dùng khỏi Hot Cache
 end
 deactivate Executor
+
+@enduml

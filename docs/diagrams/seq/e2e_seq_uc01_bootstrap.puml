@@ -1,20 +1,20 @@
 ﻿@startuml
-
+hide footbox
 actor "Admin" as Admin
-participant "Bootstrap Module" as Boot
-participant "Hybrid Storage" as Storage
-actor "The Graph" as Graph
-actor "RPC Provider" as RPC
-participant "Risk Engine" as RE
+participant "The Graph" as Graph
+participant "RPC Provider" as RPC
+control "Bootstrap Module" as Boot
+control "Risk Engine" as RE
+database "Hybrid Storage" as Storage
+
+note over Admin
+  Việc đồng bộ cũng được tokio
+  cron job tự động kích hoạt
+  mỗi 24h trong background.
+end note
 
 Admin -> Boot: Khởi động hệ thống
 activate Boot
-
-note right of Admin
-  **Lưu ý:** Việc đồng bộ cũng được
-  tokio cron job tự động kích hoạt
-  mỗi 24h trong background.
-end note
 
 Boot -> Graph: Truy vấn GraphQL lọc danh sách ví\n(ưu tiên rủi ro HF <= 2)
 activate Graph
@@ -22,8 +22,10 @@ Graph --> Boot: Trả về danh sách ví ưu tiên
 deactivate Graph
 
 opt Dữ liệu rỗng hoặc lỗi
-    Boot -> Storage: Tải danh sách ví dự phòng từ Cơ sở dữ liệu
+    Boot -> Storage: Tải danh sách ví dự phòng từ cơ sở dữ liệu
+    activate Storage
     Storage --> Boot: Danh sách ví
+    deactivate Storage
 end
 
 loop Xử lý từng ví trong danh sách
@@ -36,7 +38,7 @@ loop Xử lý từng ví trong danh sách
     activate RPC
     RPC --> Boot: Trả về số dư collateral và debt\ncho từng reserve
     deactivate RPC
-    
+
     Boot -> Boot: Kiểm tra drift dữ liệu và\nloại bỏ ví chứa tài sản không hỗ trợ
 end
 
@@ -47,7 +49,7 @@ activate Storage
 Storage --> Boot: Hoàn tất lưu trữ
 deactivate Storage
 
-Boot -> RE: Nạp trực tiếp vị thế và mapping\nvào bộ nhớ (Risk Engine)
+Boot -> RE: Nạp vị thế và mapping\nvào bộ nhớ Risk Engine
 activate RE
 RE --> Boot: Hoàn tất nạp bản đồ rủi ro nội bộ
 deactivate RE
