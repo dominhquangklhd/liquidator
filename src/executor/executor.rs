@@ -83,6 +83,7 @@ type SignedClient = SignerMiddleware<Provider<Http>, LocalWallet>;
 #[derive(Debug, Clone)]
 pub struct LiquidationResult {
     pub success: bool,
+    pub submitted_onchain: bool,
     pub tx_hash: Option<String>,
     pub gas_used: u64,
     pub gas_price: u64,
@@ -96,6 +97,7 @@ impl LiquidationResult {
     pub fn success(tx_hash: String, gas_used: u64, gas_price: u64, collateral: f64, debt: f64, profit: f64) -> Self {
         Self {
             success: true,
+            submitted_onchain: true,
             tx_hash: Some(tx_hash),
             gas_used,
             gas_price,
@@ -109,6 +111,7 @@ impl LiquidationResult {
     pub fn failed(error: String) -> Self {
         Self {
             success: false,
+            submitted_onchain: false,
             tx_hash: None,
             gas_used: 0,
             gas_price: 0,
@@ -121,6 +124,7 @@ impl LiquidationResult {
 }
 
 /// Pending liquidation tracking
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct PendingLiquidation {
     target: LiquidationTarget,
@@ -328,7 +332,7 @@ impl LiquidationExecutor {
         let chain_id = self.chain_id().await.unwrap_or(1);
         
         // Get largest debt position
-        let (debt_asset, debt_amount) = target.debt
+        let (debt_asset, _debt_amount) = target.debt
             .iter()
             .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
             .context("No debt positions")?;
@@ -471,19 +475,28 @@ impl LiquidationExecutor {
                 self.remove_pending(&target.user_address).await;
                 let mut stats = self.stats.write().await;
                 stats.failed += 1;
-                return Ok(LiquidationResult::failed("Receipt not found".to_string()));
+                let mut result = LiquidationResult::failed("Receipt not found".to_string());
+                result.submitted_onchain = true;
+                result.tx_hash = Some(tx_hash.clone());
+                return Ok(result);
             }
             Ok(Err(e)) => {
                 self.nonce_manager.fail(nonce).await;
                 self.remove_pending(&target.user_address).await;
                 let mut stats = self.stats.write().await;
                 stats.failed += 1;
-                return Ok(LiquidationResult::failed(format!("Transaction error: {:?}", e)));
+                let mut result = LiquidationResult::failed(format!("Transaction error: {:?}", e));
+                result.submitted_onchain = true;
+                result.tx_hash = Some(tx_hash.clone());
+                return Ok(result);
             }
             Err(_) => {
                 // Timeout - transaction might still be pending
                 tracing::warn!("Transaction timeout: {}", tx_hash);
-                return Ok(LiquidationResult::failed("Transaction timeout".to_string()));
+                let mut result = LiquidationResult::failed("Transaction timeout".to_string());
+                result.submitted_onchain = true;
+                result.tx_hash = Some(tx_hash.clone());
+                return Ok(result);
             }
         };
         
@@ -523,8 +536,11 @@ impl LiquidationExecutor {
             stats.reverted += 1;
             
             tracing::warn!("❌ Liquidation reverted: {}", tx_hash);
-            
-            Ok(LiquidationResult::failed(format!("Transaction reverted: {}", tx_hash)))
+
+            let mut result = LiquidationResult::failed(format!("Transaction reverted: {}", tx_hash));
+            result.submitted_onchain = true;
+            result.tx_hash = Some(tx_hash);
+            Ok(result)
         }
     }
 

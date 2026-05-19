@@ -455,11 +455,11 @@ async fn main() {
                         stats_worker(executor_for_stats, executor_stats_interval_secs).await;
                     });
 
-                    // Nonce sync worker: re-syncs on-chain nonce every 30s
-                    let nonce_sync_interval_secs = env_u64("EXECUTOR_NONCE_SYNC_INTERVAL_SECS", 30);
+                    // Nonce sync worker: re-syncs on-chain nonce every 100ms by default
+                    let nonce_sync_interval_ms = env_u64("EXECUTOR_NONCE_SYNC_INTERVAL_MS", 1000);
                     let executor_for_nonce = Arc::clone(&executor);
                     tokio::spawn(async move {
-                        nonce_sync_worker(executor_for_nonce, nonce_sync_interval_secs).await;
+                        nonce_sync_worker(executor_for_nonce, nonce_sync_interval_ms).await;
                     });
 
                     // Daily Re-Bootstrap Worker: Periodic state reconciliation

@@ -788,8 +788,8 @@ pub async fn stats_worker(executor: Arc<LiquidationExecutor>, interval_secs: u64
 }
 
 /// Nonce sync worker - periodically sync nonce with on-chain
-pub async fn nonce_sync_worker(executor: Arc<LiquidationExecutor>, interval_secs: u64) {
-    let mut ticker = interval(Duration::from_secs(interval_secs));
+pub async fn nonce_sync_worker(executor: Arc<LiquidationExecutor>, interval_ms: u64) {
+    let mut ticker = interval(Duration::from_millis(interval_ms));
     
     loop {
         ticker.tick().await;
