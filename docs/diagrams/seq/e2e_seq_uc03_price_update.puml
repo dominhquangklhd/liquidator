@@ -3,10 +3,10 @@ hide footbox
 title UC03: Phản hồi sự kiện cập nhật biến động giá
 
 participant "RPC Provider" as RPC
-control "Oracle Manager" as Oracle
-control "Event Dispatcher" as Dispatcher
-control "Risk Engine" as Risk
-database "Storage Layer" as Storage
+control "OracleManager" as Oracle
+control "EventDispatcher" as Dispatcher
+control "RiskEngine" as Risk
+control "HybridStorage" as Storage
 
 == Nhận cập nhật giá ==
 RPC -> Oracle: Cập nhật giá từ mạng lưới

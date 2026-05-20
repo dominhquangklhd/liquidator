@@ -3,9 +3,9 @@ hide footbox
 actor "Admin" as Admin
 participant "The Graph" as Graph
 participant "RPC Provider" as RPC
-control "Bootstrap Module" as Boot
-control "Risk Engine" as RE
-database "Hybrid Storage" as Storage
+control "BootstrapModule" as Boot
+control "RiskEngine" as RE
+control "HybridStorage" as Storage
 
 note over Admin
   Việc đồng bộ cũng được tokio

@@ -3,9 +3,9 @@ hide footbox
 title UC02: Phản hồi sự kiện vị thế của người dùng
 
 participant "RPC Provider" as RPC
-control "Event Dispatcher" as Dispatcher
-control "Risk Engine" as Risk
-database "Storage Layer" as Storage
+control "EventDispatcher" as Dispatcher
+control "RiskEngine" as Risk
+control "HybridStorage" as Storage
 
 == Tiếp nhận sự kiện vị thế ==
 RPC -> Dispatcher: Phát sự kiện biến động vị thế

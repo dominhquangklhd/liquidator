@@ -2,10 +2,10 @@
 hide footbox
 title UC04: Thực thi chiến dịch thanh lý
 
-database "Storage Layer" as Storage
-control "Profit Calculator" as Profit
-control "Strategy Decider" as Strategy
-control "Liquidation Executor" as Executor
+control "HybridStorage" as Storage
+control "ProfitCalculator" as Profit
+control "StrategyDecider" as Strategy
+control "LiquidationExecutor" as Executor
 participant "RPC Provider" as RPC
 
 == Lấy mục tiêu thanh lý ==
