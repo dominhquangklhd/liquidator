@@ -399,8 +399,27 @@ impl LiquidationExecutor {
         let collateral_asset_address = resolve_token_address(collateral_asset, chain_id)
             .with_context(|| format!("Invalid collateral asset address: {}", collateral_asset))?;
         
-        // Use U256::MAX — Aave automatically caps at 50% close factor
-        let debt_to_cover_f64 = *debt_amount * 0.5;
+        // Use U256::MAX — Aave caps by protocol close factor; estimate from target HF
+        let close_factor = if target.health_factor < 0.95 { 1.0 } else { 0.5 };
+        let mut debt_to_cover_f64 = *debt_amount * close_factor;
+
+        // Cap by liquidator wallet balance of the debt asset
+        match self.wallet_token_balance(debt_asset_address).await {
+            Ok((balance_tokens, _decimals)) => {
+                if balance_tokens.is_finite() && balance_tokens > 0.0 {
+                    debt_to_cover_f64 = debt_to_cover_f64.min(balance_tokens);
+                } else {
+                    debt_to_cover_f64 = 0.0;
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to read wallet balance for debt asset {:?}: {:?}",
+                    debt_asset_address,
+                    e
+                );
+            }
+        }
         let debt_to_cover = U256::MAX;
         
         // Get nonce
